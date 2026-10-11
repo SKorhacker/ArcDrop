@@ -6,7 +6,12 @@ struct ArcDropApp: App {
         WindowGroup {
             WebAppView()
                 .ignoresSafeArea()
-                .preferredColorScheme(nil)
+                // arcdrop://pay#p=… (an AirDropped payment) is handed to the web app.
+                .onOpenURL { url in NotificationCenter.default.post(name: .arcdropOpenURL, object: url) }
         }
     }
+}
+
+extension Notification.Name {
+    static let arcdropOpenURL = Notification.Name("arcdropOpenURL")
 }

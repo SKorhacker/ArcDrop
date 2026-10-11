@@ -185,6 +185,25 @@
     transition: transform .45s var(--ease); pointer-events: none; }
   .toast.show { transform: translate(-50%, 0); }
 
+
+  /* ---------- confirmation ---------- */
+  .confirm { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: calc(env(safe-area-inset-top) + 24px) 24px calc(env(safe-area-inset-bottom) + 24px); text-align: center; opacity: 0; transition: opacity .3s var(--ease); }
+  .confirm.show { opacity: 1; }
+  .check { width: 112px; height: 112px; border-radius: 50%; background: var(--green); display: grid; place-items: center; transform: scale(.4);
+    box-shadow: 0 16px 40px color-mix(in srgb, var(--green) 40%, transparent); }
+  .confirm.show .check { animation: pop .55s cubic-bezier(.34,1.56,.64,1) forwards; }
+  .check svg { width: 58px; height: 58px; stroke-dasharray: 30; stroke-dashoffset: 30; }
+  .confirm.show .check svg { animation: draw .35s .3s ease-out forwards; }
+  @keyframes pop { to { transform: scale(1); } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .confirm .c-title { font-size: 17px; color: var(--label-2); margin-top: 28px; }
+  .confirm .c-amount { font: 600 52px/1.15 var(--round); letter-spacing: -.02em; margin: 4px 0 6px; }
+  .confirm .c-sub { font-size: 15px; color: var(--label-2); }
+  .confirm .c-speed { display: inline-flex; align-items: center; gap: 6px; margin-top: 18px; padding: 8px 14px; border-radius: 18px; background: var(--fill); font-size: 15px; font-weight: 600; }
+  .confirm .c-actions { position: absolute; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 20px); max-width: 488px; margin: 0 auto; }
+  .confirm .c-actions .primary { margin: 0; width: 100%; }
+  .confirm .c-link { display: block; margin-top: 14px; font-size: 15px; font-weight: 500; }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
 </style>
 </head>
@@ -285,7 +304,20 @@
   <button role="tab" data-tab="receive" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm4.2-9.2a1 1 0 0 0-1.4 0L13 14.6V8a1 1 0 1 0-2 0v6.6l-1.8-1.8a1 1 0 1 0-1.4 1.4l3.5 3.5a1 1 0 0 0 1.4 0l3.5-3.5a1 1 0 0 0 0-1.4Z"/></svg>Recevoir</button>
   <button role="tab" data-tab="wallet" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="2.5" y="5" width="19" height="15" rx="3.5"/><rect x="2.5" y="8" width="19" height="2.5" fill="var(--bg)" opacity=".35"/><circle cx="17" cy="14.5" r="1.6" fill="var(--bg)"/></svg>Wallet</button>
 </nav>
+
+<!-- settlement confirmation -->
+<div class="confirm" id="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cTitle" hidden>
+  <div class="check" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
+  <div class="c-title" id="cTitle"></div>
+  <div class="c-amount" id="cAmount"></div>
+  <div class="c-sub" id="cSub"></div>
+  <div class="c-speed" id="cSpeed" hidden></div>
+  <div class="c-actions">
+    <button class="primary" id="cDone">OK</button>
+    <a class="c-link" id="cLink" target="_blank" rel="noopener" hidden>Voir sur l'explorateur Arc</a>
+  </div>
+</div>
 <div class="toast glass" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="app.js"></script>
+<script src="app.js" defer></script>
 </body>
 </html>

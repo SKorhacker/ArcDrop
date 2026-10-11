@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>ArcDrop</title>
+<meta name="description" content="Paie en USDC sans réseau. QR, AirDrop ou Bluetooth, réglé sur Arc.">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<style>
+  /* iOS system palette. Glass is reserved for what floats: bars, the tab bar, toasts. */
+  :root {
+    --accent: #2196F3; --accent-press: #1A7FD1; --accent-soft: rgba(33,150,243,.12);
+    --green: #34C759; --orange: #FF9500; --red: #FF3B30;
+    --bg: #F2F2F7; --cell: #FFFFFF; --cell-press: #E5E5EA;
+    --label: #000; --label-2: rgba(60,60,67,.6); --label-3: rgba(60,60,67,.3);
+    --sep: rgba(60,60,67,.29); --fill: rgba(118,118,128,.12);
+    --glass: rgba(249,249,249,.72); --glass-border: rgba(255,255,255,.6); --glass-shadow: 0 8px 32px rgba(0,0,0,.12), 0 1px 3px rgba(0,0,0,.06);
+    --blur: blur(24px) saturate(180%);
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    --round: ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --ease: cubic-bezier(.32,.72,0,1);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --accent: #3AA6F5; --accent-press: #2B8FD9; --accent-soft: rgba(58,166,245,.16);
+    --green: #30D158; --orange: #FF9F0A; --red: #FF453A;
+    --bg: #000; --cell: #1C1C1E; --cell-press: #2C2C2E;
+    --label: #fff; --label-2: rgba(235,235,245,.6); --label-3: rgba(235,235,245,.3);
+    --sep: rgba(84,84,88,.6); --fill: rgba(118,118,128,.24);
+    --glass: rgba(30,30,32,.7); --glass-border: rgba(255,255,255,.1); --glass-shadow: 0 8px 32px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.3);
+    color-scheme: dark;
+  } }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--label); }
+  body { font: 17px/1.29 var(--font); letter-spacing: -.02em; -webkit-font-smoothing: antialiased; min-height: 100dvh;
+    padding: 0 0 calc(env(safe-area-inset-bottom) + 96px); max-width: 520px; margin: 0 auto; }
+  button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
+  button { cursor: pointer; border: 0; background: none; padding: 0; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+  [hidden] { display: none !important; }
+  svg.i { width: 22px; height: 22px; display: block; flex: none; }
+  a { color: var(--accent); text-decoration: none; }
+
+  /* ---------- glass ---------- */
+  .glass { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+    border: .5px solid var(--glass-border); box-shadow: var(--glass-shadow); }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background: var(--cell); } }
+
+  /* ---------- nav bar: compact title appears once the large title scrolls away ---------- */
+  .navbar { position: sticky; top: 0; z-index: 10; height: calc(env(safe-area-inset-top) + 52px);
+    padding: env(safe-area-inset-top) 16px 0; display: flex; align-items: center; justify-content: flex-end;
+    transition: background .25s, border-color .25s; border-bottom: .5px solid transparent; }
+  .navbar.scrolled { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-bottom-color: var(--sep); }
+  .navbar .compact { position: absolute; left: 50%; transform: translateX(-50%); bottom: 15px; font-size: 17px; font-weight: 600; opacity: 0; transition: opacity .2s; }
+  .navbar.scrolled .compact { opacity: 1; }
+  .status { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 15px;
+    font-size: 13px; font-weight: 500; color: var(--label-2); background: var(--fill); letter-spacing: 0; }
+  .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--orange); }
+  .status .dot.on { background: var(--green); }
+  .status .peers { color: var(--accent); }
+  .large { font-size: 34px; font-weight: 700; letter-spacing: .01em; margin: 2px 16px 12px; line-height: 1.2; }
+
+  /* ---------- grouped lists ---------- */
+  .group { margin: 0 16px 8px; background: var(--cell); border-radius: 26px; overflow: hidden; }
+  .group-title { font-size: 13px; text-transform: uppercase; color: var(--label-2); margin: 26px 32px 7px; letter-spacing: 0; }
+  .footnote { font-size: 13px; color: var(--label-2); margin: 7px 32px 0; line-height: 1.38; letter-spacing: 0; }
+  .cell { position: relative; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 10px 16px; text-align: left; }
+  button.cell:active { background: var(--cell-press); }
+  .cell + .cell::before { content: ""; position: absolute; top: 0; right: 0; left: var(--inset, 16px); border-top: .5px solid var(--sep); }
+  .cell.has-icon { --inset: 60px; }
+  .tile { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: #fff; flex: none; }
+  .tile svg { width: 19px; height: 19px; }
+  .cell-main { flex: 1; min-width: 0; }
+  .cell-sub { font-size: 15px; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chev { color: var(--label-3); width: 14px; height: 14px; flex: none; }
+  .cell input, .cell select, .cell textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 4px 0; }
+  .cell select { appearance: none; -webkit-appearance: none; text-align: right; text-align-last: right; color: var(--label-2); }
+  .cell input::placeholder, .cell textarea::placeholder { color: var(--label-3); }
+  .cell textarea { resize: none; }
+  .mono { font-family: var(--mono); font-size: 14px; letter-spacing: 0; }
+  .accent-text { color: var(--accent); }
+
+  /* ---------- pay: amount + keypad ---------- */
+  .amount { text-align: center; padding: 10px 16px 4px; }
+  .amount-line { display: flex; justify-content: center; align-items: baseline; gap: 6px; }
+  .amount input { width: 1ch; border: 0; outline: 0; background: transparent; text-align: center; padding: 0; caret-color: transparent;
+    font: 600 64px/1.1 var(--round); letter-spacing: -.02em; color: var(--label); pointer-events: none; }
+  .amount input::placeholder { color: var(--label); }
+  .amount .unit { font: 600 24px var(--round); color: var(--label-2); }
+  .amount.shake { animation: shake .35s; }
+  .avail { font-size: 15px; color: var(--label-2); margin-top: 2px; min-height: 20px; letter-spacing: 0; }
+  @keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
+
+  .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 10px 16px 0; }
+  .keypad button { height: 56px; border-radius: 16px; font: 500 28px var(--round); display: grid; place-items: center; transition: background .12s; }
+  .keypad button:active { background: var(--fill); }
+
+  .primary { display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 32px); margin: 12px 16px 0; height: 54px;
+    border-radius: 27px; background: var(--accent); color: #fff; font-weight: 600; transition: transform .15s var(--ease), background .15s; }
+  .primary:active { transform: scale(.97); background: var(--accent-press); }
+
+  /* ---------- sheet ---------- */
+  .scrim { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.35); opacity: 0; transition: opacity .35s var(--ease); }
+  .scrim.show { opacity: 1; }
+  .sheet { position: fixed; z-index: 31; left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 8px); max-width: 504px; margin: 0 auto;
+    border-radius: 38px; padding: 8px 20px 22px; max-height: calc(100dvh - env(safe-area-inset-top) - 24px); overflow-y: auto;
+    transform: translateY(115%); transition: transform .45s var(--ease); background: var(--cell); box-shadow: 0 -10px 40px rgba(0,0,0,.2); }
+  .sheet.show { transform: none; }
+  .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--label-3); margin: 0 auto 10px; }
+  .sheet-top { display: flex; justify-content: space-between; align-items: center; }
+  .close { width: 30px; height: 30px; border-radius: 50%; background: var(--fill); color: var(--label-2); display: grid; place-items: center; }
+  .close svg { width: 13px; height: 13px; }
+  .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+  .pill.pending { color: var(--orange); background: color-mix(in srgb, var(--orange) 15%, transparent); }
+  .pill.settled { color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent); }
+  .pill.failed { color: var(--red); background: color-mix(in srgb, var(--red) 15%, transparent); }
+  .sheet .big { font: 600 44px/1.1 var(--round); text-align: center; margin: 12px 0 4px; }
+  .sheet .to { text-align: center; color: var(--label-2); font-size: 13px; }
+  .qr { background: #fff; border-radius: 22px; padding: 14px; display: grid; place-items: center; margin: 16px auto; width: min(100%, 260px); }
+  .qr img { width: 100%; height: auto; image-rendering: pixelated; display: block; }
+  .transports { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .transports button { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 13px; color: var(--label-2); letter-spacing: 0; }
+  .transports .tile { width: 58px; height: 58px; border-radius: 18px; transition: transform .15s var(--ease); }
+  .transports .tile svg { width: 28px; height: 28px; }
+  .transports button:active .tile { transform: scale(.92); }
+  .sheet .footnote { margin: 16px 4px 0; text-align: center; }
+
+  /* ---------- receive ---------- */
+  .qr-card { margin: 0 16px; background: var(--cell); border-radius: 26px; padding: 20px; text-align: center; }
+  .qr-card .qr { margin: 0 auto 14px; box-shadow: inset 0 0 0 .5px var(--sep); }
+  .addr-row { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 14px; border-radius: 18px; background: var(--fill); font-family: var(--mono); font-size: 13px; color: var(--label-2); letter-spacing: 0; }
+  .addr-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .addr-row svg { width: 16px; height: 16px; color: var(--accent); flex: none; }
+  .addr-row:active { opacity: .6; }
+  video { display: block; width: calc(100% - 32px); margin: 12px 16px 0; border-radius: 26px; background: #000; aspect-ratio: 1; object-fit: cover; }
+
+  /* ---------- payments ---------- */
+  .tx-ic { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .tx-ic svg { width: 20px; height: 20px; }
+  .tx-ic.in { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+  .tx-ic.out { color: var(--accent); background: var(--accent-soft); }
+  .tx-ic.relay { color: var(--label-2); background: var(--fill); }
+  .tx { --inset: 70px; }
+  .tx-end { text-align: right; flex: none; }
+  .tx-amt { font-weight: 600; }
+  .tx-amt.in { color: var(--green); }
+  .tx-state { font-size: 13px; color: var(--label-2); letter-spacing: 0; }
+  .tx-state.pending { color: var(--orange); }
+  .tx-state.failed { color: var(--red); }
+  .details { padding: 0 16px 14px 70px; font-size: 15px; color: var(--label-2); }
+  .details ol { list-style: none; margin: 0; padding: 0; }
+  .details li { position: relative; padding: 3px 0 3px 18px; }
+  .details li::before { content: ""; position: absolute; left: 0; top: 10px; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--label-3); }
+  .details li.done { color: var(--label); } .details li.done::before { background: var(--green); border-color: var(--green); }
+  .details li.fail { color: var(--red); } .details li.fail::before { background: var(--red); border-color: var(--red); }
+  .details .note { color: var(--orange); font-size: 13px; margin-top: 4px; }
+  .empty { padding: 18px 16px; text-align: center; color: var(--label-2); font-size: 15px; }
+
+  /* ---------- wallet ---------- */
+  .balance { text-align: center; padding: 4px 16px 20px; }
+  .balance .lbl { font-size: 15px; color: var(--label-2); }
+  .balance .bal { font: 600 52px/1.15 var(--round); letter-spacing: -.02em; margin: 2px 0 12px; }
+
+  /* ---------- tab bar ---------- */
+  nav.tabbar { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 10px);
+    width: min(330px, calc(100% - 48px)); height: 62px; border-radius: 31px; padding: 4px; display: grid; grid-template-columns: repeat(3, 1fr); }
+  nav.tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    border-radius: 27px; font-size: 10px; font-weight: 600; color: var(--label); letter-spacing: 0; transition: color .2s, background .2s; }
+  nav.tabbar button svg { width: 26px; height: 26px; }
+  nav.tabbar button[aria-selected="true"] { color: var(--accent); background: var(--fill); }
+
+  section { animation: appear .3s var(--ease); }
+  @keyframes appear { from { opacity: 0; transform: translateY(6px); } }
+
+  .toast { position: fixed; z-index: 40; left: 50%; top: calc(env(safe-area-inset-top) + 8px); transform: translate(-50%, -160%);
+    width: max-content; max-width: calc(100vw - 32px); padding: 12px 18px; border-radius: 22px; font-size: 15px; font-weight: 500; text-align: center;
+    transition: transform .45s var(--ease); pointer-events: none; }
+  .toast.show { transform: translate(-50%, 0); }
+
+
+  /* ---------- confirmation ---------- */
+  .confirm { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: calc(env(safe-area-inset-top) + 24px) 24px calc(env(safe-area-inset-bottom) + 24px); text-align: center; opacity: 0; transition: opacity .3s var(--ease); }
+  .confirm.show { opacity: 1; }
+  .check { width: 112px; height: 112px; border-radius: 50%; background: var(--green); display: grid; place-items: center; transform: scale(.4);
+    box-shadow: 0 16px 40px color-mix(in srgb, var(--green) 40%, transparent); }
+  .confirm.show .check { animation: pop .55s cubic-bezier(.34,1.56,.64,1) forwards; }
+  .check svg { width: 58px; height: 58px; stroke-dasharray: 30; stroke-dashoffset: 30; }
+  .confirm.show .check svg { animation: draw .35s .3s ease-out forwards; }
+  @keyframes pop { to { transform: scale(1); } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .confirm .c-title { font-size: 17px; color: var(--label-2); margin-top: 28px; }
+  .confirm .c-amount { font: 600 52px/1.15 var(--round); letter-spacing: -.02em; margin: 4px 0 6px; }
+  .confirm .c-sub { font-size: 15px; color: var(--label-2); }
+  .confirm .c-speed { display: inline-flex; align-items: center; gap: 6px; margin-top: 18px; padding: 8px 14px; border-radius: 18px; background: var(--fill); font-size: 15px; font-weight: 600; }
+  .confirm .c-actions { position: absolute; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom) + 20px); max-width: 488px; margin: 0 auto; }
+  .confirm .c-actions .primary { margin: 0; width: 100%; }
+  .confirm .c-link { display: block; margin-top: 14px; font-size: 15px; font-weight: 500; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
+</style>
+</head>
+<body>
+<div class="navbar" id="navbar">
+  <span class="compact" id="compactTitle">Payer</span>
+  <div class="status" role="status"><span id="netDot" class="dot"></span><span id="netLabel">hors ligne</span><span id="chainLabel" hidden></span><span id="meshPeers" class="peers" hidden></span></div>
+</div>
+
+<!-- PAYER -->
+<section id="tab-pay" data-title="Payer">
+  <h1 class="large">Payer</h1>
+  <div class="amount" id="amountBox">
+    <div class="amount-line"><input id="payAmount" placeholder="0" readonly inputmode="none" tabindex="-1" aria-label="Montant en USDC"><span class="unit">USDC</span></div>
+    <div class="avail" id="avail"></div>
+  </div>
+
+  <div class="group" style="margin-top:12px">
+    <label class="cell">
+      <span style="flex:none">À</span>
+      <input id="payTo" class="mono" placeholder="Adresse 0x… ou scanne" autocomplete="off" spellcheck="false">
+      <button id="scanTo" type="button" class="accent-text" aria-label="Scanner l'adresse"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></button>
+    </label>
+  </div>
+
+  <div class="keypad" id="keypad" role="group" aria-label="Pavé numérique">
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+    <button data-k=",">,</button><button data-k="0">0</button>
+    <button data-k="del" aria-label="Effacer"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1Z"/><path d="m16 10-4 4M12 10l4 4"/></svg></button>
+  </div>
+  <button id="signBtn" class="primary">Signer le paiement</button>
+</section>
+
+<!-- RECEVOIR -->
+<section id="tab-receive" data-title="Recevoir" hidden>
+  <h1 class="large">Recevoir</h1>
+  <div class="qr-card">
+    <div class="qr" id="myQr"></div>
+    <button class="addr-row" id="copyAddr" aria-label="Copier mon adresse"><span id="myAddr2"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+  </div>
+  <video id="video" playsinline muted hidden></video>
+  <div class="group" style="margin-top:20px">
+    <button class="cell has-icon" id="scanPay"><span class="tile" style="background:#2196F3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></span><span class="cell-main">Scanner un paiement</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <button class="cell has-icon" id="pastePay"><span class="tile" style="background:#FF9500"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span><span class="cell-main">Coller un paiement</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+  </div>
+  <div class="group" id="manual" hidden style="margin-top:8px">
+    <div class="cell"><textarea id="pasteBox" rows="3" class="mono" placeholder="arcdrop:1:…" aria-label="Paiement à coller"></textarea></div>
+    <button class="cell accent-text" id="importBtn" style="justify-content:center;font-weight:600">Ajouter</button>
+  </div>
+  <div class="group-title">Paiements reçus</div>
+  <div class="group" id="inbox"></div>
+</section>
+
+<!-- WALLET -->
+<section id="tab-wallet" data-title="Wallet" hidden>
+  <h1 class="large">Wallet</h1>
+  <div class="balance">
+    <div class="lbl">Solde</div>
+    <div class="bal" id="balance">—</div>
+    <button class="addr-row" id="copyAddr2" aria-label="Copier mon adresse"><span id="myAddr"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+  </div>
+  <div class="group">
+    <label class="cell has-icon"><span class="tile" style="background:#5856D6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span><span style="flex:none">Réseau</span>
+      <select id="chainSel"><option value="5042002">Arc testnet</option><option value="5042">Arc mainnet</option></select></label>
+    <label class="cell has-icon"><span class="tile" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg></span><span style="flex:none">Passerelle</span>
+      <input id="gateway" placeholder="ce site" style="text-align:right;color:var(--label-2)" autocomplete="off"></label>
+  </div>
+  <div class="group" style="margin-top:20px">
+    <button class="cell has-icon" id="exportKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/></svg></span><span class="cell-main">Exporter la clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <button class="cell has-icon" id="importKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></span><span class="cell-main">Importer une clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+  </div>
+  <p class="footnote">Démo : la clé vit sur cet appareil. N'y garde que quelques dollars.</p>
+  <div class="group-title">Paiements envoyés</div>
+  <div class="group" id="sent"></div>
+</section>
+
+<!-- signed payment sheet -->
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="payOut" role="dialog" aria-modal="true" aria-labelledby="outAmount" hidden>
+  <div class="grabber"></div>
+  <div class="sheet-top"><span class="pill pending">Signé · en attente</span>
+    <button class="close" id="closeSheet" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+  <div class="big" id="outAmount"></div>
+  <div class="to mono" id="outTo"></div>
+  <div class="qr" id="outQr"></div>
+  <div class="transports">
+    <button id="tQr"><span class="tile" style="background:linear-gradient(180deg,#8E8E93,#636366)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/></svg></span>QR code</button>
+    <button id="tShare"><span class="tile" style="background:linear-gradient(180deg,#5AC8FA,#2196F3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 13a7 7 0 0 1 14 0M8.5 13a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="13" r="1" fill="currentColor"/></svg></span>AirDrop</button>
+    <button id="tMesh"><span class="tile" style="background:linear-gradient(180deg,#64D2FF,#0A84FF)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg></span>Bluetooth</button>
+  </div>
+  <p class="footnote" id="transportHint">Aucun réseau nécessaire. Le premier appareil qui capte règle le paiement sur Arc.</p>
+</div>
+
+<nav class="tabbar glass" aria-label="Navigation principale" role="tablist">
+  <button role="tab" data-tab="pay" aria-selected="true"><svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.2 9.2a1 1 0 0 1-1.4 0L13 9.4V16a1 1 0 1 1-2 0V9.4l-1.8 1.8a1 1 0 1 1-1.4-1.4l3.5-3.5a1 1 0 0 1 1.4 0l3.5 3.5a1 1 0 0 1 0 1.4Z"/></svg>Payer</button>
+  <button role="tab" data-tab="receive" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm4.2-9.2a1 1 0 0 0-1.4 0L13 14.6V8a1 1 0 1 0-2 0v6.6l-1.8-1.8a1 1 0 1 0-1.4 1.4l3.5 3.5a1 1 0 0 0 1.4 0l3.5-3.5a1 1 0 0 0 0-1.4Z"/></svg>Recevoir</button>
+  <button role="tab" data-tab="wallet" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="2.5" y="5" width="19" height="15" rx="3.5"/><rect x="2.5" y="8" width="19" height="2.5" fill="var(--bg)" opacity=".35"/><circle cx="17" cy="14.5" r="1.6" fill="var(--bg)"/></svg>Wallet</button>
+</nav>
+
+<!-- settlement confirmation -->
+<div class="confirm" id="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cTitle" hidden>
+  <div class="check" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
+  <div class="c-title" id="cTitle"></div>
+  <div class="c-amount" id="cAmount"></div>
+  <div class="c-sub" id="cSub"></div>
+  <div class="c-speed" id="cSpeed" hidden></div>
+  <div class="c-actions">
+    <button class="primary" id="cDone">OK</button>
+    <a class="c-link" id="cLink" target="_blank" rel="noopener" hidden>Voir sur l'explorateur Arc</a>
+  </div>
+</div>
+<div class="toast glass" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js" defer></script>
+</body>
+</html>

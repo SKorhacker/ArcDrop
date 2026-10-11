@@ -17,15 +17,22 @@ const store = {
 const mesh = globalThis.webkit?.messageHandlers?.arcmesh
 
 // ---------- wallet ----------
-let key = store.get('key')
-if (!key) { key = generatePrivateKey(); store.set('key', key) }
+// In the iOS app the key also lives in the Keychain (injected before this script runs),
+// so it survives even if the web view's storage is cleared.
+let key = globalThis.ARCDROP_NATIVE_KEY || store.get('key')
+if (!key) key = generatePrivateKey()
+store.set('key', key)
+mesh?.postMessage({ type: 'saveKey', key })
 let account = privateKeyToAccount(key)
 // Default network is set at build time (ARCDROP_CHAIN=mainnet|testnet); `?net=` overrides it.
 const NETS = { mainnet: 5042, testnet: 5042002 }
 const urlNet = NETS[new URLSearchParams(location.search).get('net')]
 if (urlNet) store.set('chain', urlNet)
 let chainId = urlNet ?? store.get('chain', NETS[ARCDROP_CHAIN] ?? 5042002)
-const gateway = () => (store.get('gateway', '') || location.origin).replace(/\/$/, '')
+// Inside the iOS app the page is a local file: talk to (and link to) the public deployment.
+const PUBLIC_ORIGIN = 'https://arcdrop-pink.vercel.app'
+const webOrigin = /^https?:$/.test(location.protocol) ? location.origin : PUBLIC_ORIGIN
+const gateway = () => (store.get('gateway', '') || webOrigin).replace(/\/$/, '')
 // Stored entries may be corrupted or from an older format: skip them instead of breaking the app.
 const tryDecode = (packet) => { try { return decodePayment(packet) } catch { return null } }
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
@@ -154,7 +161,8 @@ $('signBtn').onclick = async () => {
   if (value > available) { shake(); return toast(`Disponible : ${fmt(available)} USDC`) }
   const p = await createPayment({ account, to, amount: value, chainId })
   const packet = encodePayment(p)
-  lastPayment = { p, packet, link: paymentLink(p, location.origin + location.pathname) }
+  // In the app, AirDrop an arcdrop:// link so the receiver's app opens it directly.
+  lastPayment = { p, packet, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${location.protocol === 'file:' ? '/' : location.pathname}`) }
   const sent = store.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending' })
   store.set('sent', sent)
@@ -190,6 +198,7 @@ $('tMesh').onclick = () => {
 }
 // Called by the iOS app when a packet arrives over the mesh, and when neighbors come and go.
 globalThis.arcdropReceive = (text) => importPacket(text, 'Bluetooth')
+globalThis.arcdropOpenURL = (url) => importPacket(url, 'AirDrop') // arcdrop://pay#p=… opened by iOS
 globalThis.arcdropMeshPeers = (n) => {
   $('meshPeers').hidden = false
   $('meshPeers').textContent = n ? `${n} proche${n > 1 ? 's' : ''}` : 'personne autour'
@@ -286,6 +295,36 @@ $('scanTo').onclick = () => { tab('receive'); scan((t) => {
 
 // ---------- settlement ----------
 let settling = false
+// ---------- confirmation ----------
+// Shown once per payment, when it becomes final on Arc while the app is open.
+const confirmQueue = []
+function confirmSettled({ title, amount, sub, ms, tx }) {
+  confirmQueue.push({ title, amount, sub, ms, tx })
+  if (confirmQueue.length === 1) showConfirm()
+}
+function showConfirm() {
+  const c = confirmQueue[0]
+  if (!c) return
+  $('cTitle').textContent = c.title
+  $('cAmount').textContent = c.amount
+  $('cSub').textContent = c.sub
+  $('cSpeed').hidden = !c.ms
+  $('cSpeed').textContent = c.ms ? `⚡ Réglé sur Arc en ${(c.ms / 1000).toFixed(2).replace('.', ',')} s` : ''
+  $('cLink').hidden = !c.tx
+  if (c.tx) $('cLink').href = c.tx
+  $('confirm').hidden = false
+  requestAnimationFrame(() => requestAnimationFrame(() => $('confirm').classList.add('show')))
+  haptic('success')
+}
+$('cDone').onclick = () => {
+  $('confirm').classList.remove('show')
+  setTimeout(() => { $('confirm').hidden = true; confirmQueue.shift(); showConfirm() }, 300)
+}
+function haptic(kind) {
+  if (mesh) mesh.postMessage({ type: 'haptic', kind }) // real Taptic Engine in the iOS app
+  else navigator.vibrate?.(kind === 'success' ? [20, 60, 30] : 30)
+}
+
 async function settleAll() {
   if (settling || !online) return
   settling = true
@@ -294,6 +333,10 @@ async function settleAll() {
     for (const item of inbox.filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
       Object.assign(item, await settleOne(item.packet))
       store.set('inbox', inbox); renderInbox()
+      const p = decodePayment(item.packet)
+      if (item.status === 'settled' && p.to === account.address && item.tx) {
+        confirmSettled({ title: 'Paiement reçu', amount: `+${fmt(p.value)} USDC`, sub: `de ${short(p.from)} · par ${item.via ?? '—'}`, ms: item.ms, tx: item.tx })
+      }
     }
     await refreshSent()
     refreshBalance()
@@ -330,7 +373,12 @@ async function refreshSent() {
   for (const s of sent.filter((s) => s.status === 'pending')) {
     const p = tryDecode(s.packet)
     if (!p) continue
-    try { if ((await checkPayment(p)).settled) s.status = 'settled' } catch {}
+    try {
+      if ((await checkPayment(p)).settled) {
+        s.status = 'settled'
+        confirmSettled({ title: 'Paiement réglé', amount: `${fmt(p.value)} USDC`, sub: `à ${short(p.to)} · final sur Arc` })
+      }
+    } catch {}
   }
   store.set('sent', sent); renderSent()
 }
@@ -411,9 +459,13 @@ $('exportKey').onclick = async () => { await copy(key); toast('Clé privée copi
 $('importKey').onclick = () => {
   const k = prompt('Clé privée (0x…)')
   if (!k) return
-  try { account = privateKeyToAccount(k.trim()); key = k.trim(); store.set('key', key); renderWallet(); refreshBalance(); toast('Clé importée') } catch { toast('Clé invalide') }
+  try {
+    account = privateKeyToAccount(k.trim()); key = k.trim(); store.set('key', key)
+    mesh?.postMessage({ type: 'saveKey', key })
+    renderWallet(); refreshBalance(); toast('Clé importée')
+  } catch { toast('Clé invalide') }
 }
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})
+if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {})
 
 renderWallet(); renderInbox(); renderSent(); renderAvail(); handleHash(); probe()

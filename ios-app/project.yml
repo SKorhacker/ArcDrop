@@ -17,6 +17,9 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - path: Web
+        type: folder
+        buildPhase: resources
       - path: ../mesh/ArcMesh.swift
       - path: ../ios/ArcDropRelay.swift
     info:
@@ -28,8 +31,10 @@ targets:
         NSBluetoothAlwaysUsageDescription: ArcDrop passe tes paiements aux téléphones proches en Bluetooth, sans réseau.
         NSCameraUsageDescription: ArcDrop scanne les QR codes de paiement.
         UIBackgroundModes: [bluetooth-central, bluetooth-peripheral]
-        # Service workers in WKWebView require app-bound domains: they keep the app usable offline.
-        WKAppBoundDomains: [arcdrop-pink.vercel.app]
+        # arcdrop://pay#p=… links (AirDrop) open the app directly.
+        CFBundleURLTypes:
+          - CFBundleURLName: app.arcdrop.pay
+            CFBundleURLSchemes: [arcdrop]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.arcdrop.ios

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1A6EAD81CC42008A1245C9E1 /* Web in Resources */ = {isa = PBXBuildFile; fileRef = AE43C52F7165554ED22F3871 /* Web */; };
 		38D80048C5370C33C86E5C80 /* ArcDropRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06F15195601E9CBCB1EC7B4F /* ArcDropRelay.swift */; };
 		3C815C449429BECCB7C95C61 /* ArcMesh.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916475EE0B0931652BC17840 /* ArcMesh.swift */; };
 		4FD70BA6EE70E9EFA10E064A /* ArcDropApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C543D643261115626ED68E6 /* ArcDropApp.swift */; };
@@ -18,6 +19,7 @@
 		916475EE0B0931652BC17840 /* ArcMesh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcMesh.swift; sourceTree = "<group>"; };
 		9C543D643261115626ED68E6 /* ArcDropApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcDropApp.swift; sourceTree = "<group>"; };
 		A26CE91DDB19B3806207A244 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AE43C52F7165554ED22F3871 /* Web */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Web; sourceTree = SOURCE_ROOT; };
 		AF21DEE25F01A8B783ECA008 /* WebAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebAppView.swift; sourceTree = "<group>"; };
 		C5A7AB5C0C50B159B1C206BF /* ArcDrop.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ArcDrop.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -26,6 +28,7 @@
 		19EF8E83613B36604F63CCFA = {
 			isa = PBXGroup;
 			children = (
+				AE43C52F7165554ED22F3871 /* Web */,
 				914B61FAF97EADB91F2BECBE /* ios */,
 				428DDBCE0E4FA71543AE4227 /* mesh */,
 				89AA2DCFBA42E4B5B482DBFF /* Sources */,
@@ -77,6 +80,7 @@
 			buildConfigurationList = EB8E2E0AAC19F3F1346B2C04 /* Build configuration list for PBXNativeTarget "ArcDrop" */;
 			buildPhases = (
 				064399A796626C1B43A372E7 /* Sources */,
+				0B07306F74918B6E37A1E255 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -122,6 +126,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0B07306F74918B6E37A1E255 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A6EAD81CC42008A1245C9E1 /* Web in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		064399A796626C1B43A372E7 /* Sources */ = {
