@@ -78,12 +78,13 @@ console.log('status check ok', status)
 
 // ---------- receipts & requests ----------
 {
-  const { createPayment, createAck, readAck, encodeRequest, decodeRequest } = await import('../core/arcdrop.js')
+  const { createPayment, createAck, verifyAck, encodeRequest, decodeRequest } = await import('../core/arcdrop.js')
   const q = await createPayment({ account: payer, to: payee.address, amount: '1' })
   const ack = await createAck(payee, q)
-  const r = await readAck(`✓ ${ack}`)
-  assert.equal(r.nonce, q.nonce)
-  assert.equal(r.signer, payee.address)
+  assert.equal(await verifyAck(`✓ ${ack}`, q), true)
+  // a receipt is bound to the whole payment and to the recipient
+  assert.equal(await verifyAck(ack, { ...q, value: q.value + 1n }), false)
+  assert.equal(await verifyAck(await createAck(payer, q), q), false)
   const req = encodeRequest({ chainId: 5042002, token: 1, to: payee.address, value: 12_500_000n, label: 'Crêpe nutella 🍫' })
   assert.deepEqual(decodeRequest(`scan: ${req}`), { chainId: 5042002, token: 1, to: payee.address, value: 12_500_000n, label: 'Crêpe nutella 🍫' })
   assert.equal(decodeRequest('nothing here'), null)

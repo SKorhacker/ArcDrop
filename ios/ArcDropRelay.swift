@@ -121,25 +121,38 @@ actor ArcDropRelay {
         URL(string: UserDefaults.standard.string(forKey: "arcdrop.gateway") ?? Self.defaultGateway)
     }
 
+    // Anyone nearby can feed us packets: bound what we keep and what we forward.
+    static let maxStates = 500
+    static let maxQueue = 100
+    static let minValue: UInt64 = 10_000 // 0.01, same floor as the gateway
+    private var flushing = false
+
     /// Call with every message sent or received. Cheap when there is no packet.
     nonisolated func observe(_ content: String) {
-        guard content.contains(ArcDropPacket.prefix), let info = ArcDropPacket.decode(content) else { return }
+        guard content.contains("arcdrop:"), let info = ArcDropPacket.decode(content) else { return }
         Task { await self.enqueue(info) }
     }
 
     func enqueue(_ info: ArcDropPacket.Info) async {
         let key = info.packet
         guard states[key] == nil else { return }    // same packet via another mesh path
-        guard UInt32(Date().timeIntervalSince1970) < info.validBefore else {
-            states[key] = .rejected("expired"); return
+        guard UInt32(Date().timeIntervalSince1970) < info.validBefore, info.value >= Self.minValue else { return }
+        if states.count >= Self.maxStates {
+            states = states.filter { if case .queued = $0.value { return true } else { return false } }
         }
+        guard queue.count < Self.maxQueue, states.count < Self.maxStates else { return }
         queue[key] = info
         states[key] = .queued
         await flush()
     }
 
     func flush() async {
-        guard let gateway else { return }
+        // One pass at a time: actor reentrancy would otherwise post the same packets repeatedly.
+        guard let gateway, !flushing else { return }
+        flushing = true
+        defer { flushing = false }
+        let now = UInt32(Date().timeIntervalSince1970)
+        for (key, info) in queue where info.validBefore <= now { queue[key] = nil; states[key] = .rejected("expired") }
         for (key, info) in queue {
             var request = URLRequest(url: gateway.appendingPathComponent("api/relay"))
             request.httpMethod = "POST"

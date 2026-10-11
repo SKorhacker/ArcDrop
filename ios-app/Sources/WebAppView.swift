@@ -60,8 +60,14 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
 
     // MARK: JS → native
 
+    /// The bridge only answers ArcDrop's own bundled page, never another document or frame.
+    private func trusted(_ frame: WKFrameInfo) -> Bool {
+        frame.isMainFrame && frame.request.url?.isFileURL == true && webView.url?.isFileURL == true
+    }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        guard trusted(message.frameInfo),
+              let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
         case "broadcast":
             guard let packet = body["packet"] as? String else { return }
@@ -124,7 +130,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
 
     // Camera for the QR scanner: the app already asked iOS for camera access.
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(type == .camera ? .grant : .deny)
+        decisionHandler(type == .camera && frame.isMainFrame && origin.protocol == "file" ? .grant : .deny)
     }
 
     // window.prompt (used by "Importer une clé").
@@ -136,17 +142,18 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         present(alert, animated: true)
     }
 
-    // The app's own pages are local files; any web link (the explorer) opens in Safari.
+    // Only the bundled app may load in the web view. https links (the explorer) open in
+    // Safari on a user tap; every other scheme (javascript:, data:, tel:, other apps) is refused.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = action.request.url, url.scheme == "http" || url.scheme == "https" {
-            UIApplication.shared.open(url)
-            return decisionHandler(.cancel)
-        }
-        decisionHandler(.allow)
+        guard let url = action.request.url else { return decisionHandler(.cancel) }
+        if url.isFileURL, url.path.hasPrefix(Bundle.main.bundlePath) { return decisionHandler(.allow) }
+        if url.absoluteString == "about:blank" { return decisionHandler(.allow) }
+        if url.scheme == "https", action.navigationType == .linkActivated { UIApplication.shared.open(url) }
+        decisionHandler(.cancel)
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = action.request.url { UIApplication.shared.open(url) }
+        if let url = action.request.url, url.scheme == "https" { UIApplication.shared.open(url) }
         return nil
     }
 }

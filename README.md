@@ -51,9 +51,19 @@ mesh/build/arcmesh-node https://arcdrop-pink.vercel.app
 cd ios-app && xcodegen generate && open ArcDrop.xcodeproj   # set your team, run on device
 ```
 
-## Offline vault (guaranteed payments)
+## Offline vault (experimental, no guarantee)
 
-`contracts/ArcDropVault.sol` (deployed on Arc testnet, address in `core/vault.json`): funds are locked in advance with an EIP-3009 `receiveWithAuthorization`; offline payments become EIP-712 vouchers (`arcdrop:3:…`) redeemed by anyone; withdrawals need 24 h notice so vouchers in flight always settle. `scripts/vault-e2e.mjs` runs the whole thing live on testnet.
+`contracts/ArcDropVault.sol` (Arc testnet only, address in `core/vault.json`) lets a payer lock funds and pay with EIP-712 vouchers (`arcdrop:3:…`). The security review showed it does **not** guarantee recipients: a payer can redeem a voucher to their own second wallet and empty it at once. It is kept as a prototype; ArcDrop makes no guarantee claim for it.
+
+## Security review
+
+The project was attacked by three independent AI reviewers (contract, gateway/core, app/iOS/Bluetooth). Every confirmed finding is fixed and has a regression test:
+
+- `npm test`: offline + live checks, including `test/attacks.test.mjs` (alternate encodings, malleable signatures, postdated payments, overflow, receipt forgery, hostile requests) and `test/gateway.test.mjs` (self-payment gas drain, dust, malformed input, rate limits, CORS, path traversal, oversized bodies).
+- `mesh/check`: Bluetooth framing plus hostile-device tests (20 000-fragment flood, cross-device frame injection, junk payments).
+- `scripts/attack-e2e.mjs`: live burnt-nonce attack on testnet; ArcDrop reports the payment as NOT paid, because "settled" requires an on-chain transfer of exactly that amount to exactly that recipient.
+
+Known limits: offline, a payment is a promise (the payer's balance can only be checked online); gateway rate limits are per instance.
 
 ## Run it
 

@@ -55,6 +55,12 @@ public final class ArcMesh: NSObject {
     static let frameHeader = 7 // msgId 4 | index 1 | count 1 | hops 1
     static let helloEvery: TimeInterval = 5
     static let nearbyTimeout: TimeInterval = 20
+    // Abuse limits: any nearby device can send anything, as often as it likes.
+    static let maxMessagesPerLinkPerMinute = 60
+    static let maxPendingNotify = 200
+    static let maxNearby = 30
+    static let catchUpCooldown: TimeInterval = 30
+    static let knownChains: Set<UInt32> = [5042, 5042002]
 
     public weak var delegate: ArcMeshDelegate?
     public private(set) var peerCount = 0
@@ -74,6 +80,8 @@ public final class ArcMesh: NSObject {
     private var store: [Data: (envelope: Data, hops: UInt8, seen: Date)] = [:]
     private var assembler = FrameAssembler()
     private var pendingNotify: [(Data, [CBCentral]?)] = []
+    private var linkTraffic: [UUID: (window: Date, count: Int)] = [:]
+    private var lastCatchUp: [UUID: Date] = [:]
 
     // Presence: who is behind each link, and how strong their signal is.
     private var profile: Data?
@@ -117,7 +125,7 @@ public final class ArcMesh: NSObject {
     // MARK: Text <-> envelope (same encodings as core/arcdrop.js)
 
     static func envelope(from text: String) -> Data? {
-        for (prefix, kind, lengths) in [("arcdrop:3:", Kind.payment, [154]), ("arcdrop:2:", .payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:1:", .receipt, [97])] {
+        for (prefix, kind, lengths) in [("arcdrop:3:", Kind.payment, [154]), ("arcdrop:2:", .payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:2:", .receipt, [97])] {
             guard let range = text.range(of: prefix) else { continue }
             let body = text[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
             guard let data = Data(base64URL: String(body)), lengths.contains(data.count) else { return nil }
@@ -133,7 +141,7 @@ public final class ArcMesh: NSObject {
         case (.payment, 157): return "arcdrop:1:" + body.base64URL
         case (.payment, 158): return "arcdrop:2:" + body.base64URL
         case (.payment, 154): return "arcdrop:3:" + body.base64URL
-        case (.receipt, 97): return "arcdrop-ack:1:" + body.base64URL
+        case (.receipt, 97): return "arcdrop-ack:2:" + body.base64URL
         default: return nil
         }
     }
@@ -144,17 +152,49 @@ public final class ArcMesh: NSObject {
     private func remember(_ envelope: Data, hops: UInt8) -> Bool {
         let key = Data(SHA256.hash(data: envelope))
         guard store[key] == nil else { return false }
-        if store.count >= Self.maxStored, let oldest = store.min(by: { $0.value.seen < $1.value.seen })?.key {
-            store[oldest] = nil
+        if store.count >= Self.maxStored {
+            // Expired payments go first, then the oldest.
+            let expired = store.filter { !Self.plausible($0.value.envelope) }.map(\.key)
+            for k in expired { store[k] = nil }
+            if store.count >= Self.maxStored, let oldest = store.min(by: { $0.value.seen < $1.value.seen })?.key { store[oldest] = nil }
         }
         store[key] = (envelope, hops, Date())
         return true
     }
 
+    /// Cheap structural checks (no signature crypto here; the app verifies signatures):
+    /// known chain, non-zero amount, not expired, not postdated. Junk is neither stored nor forwarded.
+    static func plausible(_ envelope: Data, now: Date = Date()) -> Bool {
+        let bytes = [UInt8](envelope)
+        guard let kind = bytes.first.flatMap(Kind.init(rawValue:)) else { return false }
+        guard kind == .payment else { return kind == .receipt && bytes.count == 98 }
+        func u(_ o: Int, _ n: Int) -> UInt64 { bytes[o..<o + n].reduce(0) { $0 << 8 | UInt64($1) } }
+        let t = UInt64(now.timeIntervalSince1970)
+        switch bytes.count - 1 {
+        case 157, 158: // v1 / v2: [token] chainId from to value validAfter validBefore nonce sig
+            let o = bytes.count - 1 == 158 ? 2 : 1
+            return knownChains.contains(UInt32(u(o, 4))) && u(o + 44, 8) > 0 && u(o + 52, 4) <= t && u(o + 56, 4) > t
+        case 154: // v3: token chainId from to value validBefore nonce sig
+            return knownChains.contains(UInt32(u(2, 4))) && u(46, 8) > 0 && u(54, 4) > t
+        default: return false
+        }
+    }
+
+    /// Per-link budget so one device cannot flood the node.
+    private func withinBudget(_ link: UUID) -> Bool {
+        let now = Date()
+        var entry = linkTraffic[link] ?? (now, 0)
+        if now.timeIntervalSince(entry.window) > 60 { entry = (now, 0) }
+        entry.count += 1
+        linkTraffic[link] = entry
+        if linkTraffic.count > 200 { linkTraffic = linkTraffic.filter { now.timeIntervalSince($0.value.window) < 60 } }
+        return entry.count <= Self.maxMessagesPerLinkPerMinute
+    }
+
     private func received(_ envelope: Data, hops: UInt8, from link: UUID) {
-        guard let first = envelope.first, let kind = Kind(rawValue: first) else { return }
+        guard let first = envelope.first, let kind = Kind(rawValue: first), withinBudget(link) else { return }
         if kind == .hello { return heard(envelope, from: link) }
-        guard let text = Self.text(from: envelope), remember(envelope, hops: hops) else { return }
+        guard Self.plausible(envelope), let text = Self.text(from: envelope), remember(envelope, hops: hops) else { return }
         if kind == .payment {
             log("payment received (\(hops) hop\(hops == 1 ? "" : "s"))")
             DispatchQueue.main.async { self.delegate?.mesh(self, didReceive: text, hops: Int(hops)) }
@@ -169,7 +209,10 @@ public final class ArcMesh: NSObject {
         let body = Data(envelope.dropFirst())
         guard body.count >= 20, body.count <= 52 else { return }
         let address = "0x" + body.prefix(20).map { String(format: "%02x", $0) }.joined()
-        let name = String(decoding: body.dropFirst(20), as: UTF8.self)
+        // Names come from anyone: drop control, format (zero-width, bidi) characters.
+        let name = String(String(decoding: body.dropFirst(20), as: UTF8.self).unicodeScalars
+            .filter { !CharacterSet.controlCharacters.contains($0) && $0.properties.generalCategory != .format }.prefix(24))
+        if hellos[link] == nil, hellos.count >= Self.maxNearby * 2 { return }
         hellos[link] = (address, name, Date())
         publishNearby()
     }
@@ -190,6 +233,7 @@ public final class ArcMesh: NSObject {
         let max = targets.map { $0.maximumUpdateValueLength }.min() ?? 20
         for frame in Self.frames(for: envelope, hops: hops + 1, maxLength: max) {
             if !peripheral.updateValue(frame, for: characteristic, onSubscribedCentrals: targets) {
+                guard pendingNotify.count < Self.maxPendingNotify else { break } // a stalled reader can't grow memory
                 pendingNotify.append((frame, targets))
             }
         }
@@ -197,7 +241,11 @@ public final class ArcMesh: NSObject {
 
     private func catchUp(_ peer: UUID) {
         if let profile { send(profile, hops: 0, to: peer) }
-        for item in store.values where item.hops < Self.maxHops { send(item.envelope, hops: item.hops, to: peer) }
+        // Reconnecting over and over must not make us resend everything each time.
+        if let last = lastCatchUp[peer], Date().timeIntervalSince(last) < Self.catchUpCooldown { return }
+        lastCatchUp[peer] = Date()
+        if lastCatchUp.count > 500 { lastCatchUp = lastCatchUp.filter { Date().timeIntervalSince($0.value) < Self.catchUpCooldown } }
+        for item in store.values where item.hops < Self.maxHops && Self.plausible(item.envelope) { send(item.envelope, hops: item.hops, to: peer) }
     }
 
     /// Every few seconds: say hello, refresh signal strength, forget silent neighbors.
@@ -216,7 +264,7 @@ public final class ArcMesh: NSObject {
             if let current = best[hello.address], (current.rssi ?? -200) >= (candidate.rssi ?? -200) { continue }
             best[hello.address] = candidate
         }
-        let peers = best.values.sorted { ($0.rssi ?? -200) > ($1.rssi ?? -200) }
+        let peers = Array(best.values.sorted { ($0.rssi ?? -200) > ($1.rssi ?? -200) }.prefix(Self.maxNearby))
         guard peers != lastNearby else { return }
         lastNearby = peers
         DispatchQueue.main.async { self.delegate?.mesh(self, nearbyChanged: peers) }
@@ -240,7 +288,7 @@ public final class ArcMesh: NSObject {
     }
 
     private func ingest(frame: Data, from link: UUID) {
-        if let (bytes, hops) = assembler.add(frame) { received(bytes, hops: hops, from: link) }
+        if let (bytes, hops) = assembler.add(frame, from: link) { received(bytes, hops: hops, from: link) }
     }
 
     private func dropLink(_ id: UUID) {
@@ -377,11 +425,16 @@ extension CBManagerState {
 }
 
 /// Reassembles frames into messages. Input comes from any nearby device, so it
-/// is bounds-checked and incomplete messages expire.
+/// is bounds-checked, keyed per link (a device can't complete another's message),
+/// capped in size, and incomplete messages expire.
 struct FrameAssembler {
-    private var partial: [UInt32: (count: Int, hops: UInt8, pieces: [Int: Data], from: Date)] = [:]
+    struct Key: Hashable { let link: UUID; let id: UInt32 }
+    static let maxPartial = 64
+    private var partial: [Key: (count: Int, hops: UInt8, pieces: [Int: Data], from: Date)] = [:]
 
-    mutating func add(_ frame: Data) -> (Data, UInt8)? {
+    static let anyLink = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    mutating func add(_ frame: Data, from link: UUID = FrameAssembler.anyLink) -> (Data, UInt8)? {
         let frame = Data(frame) // re-base indices
         guard frame.count > ArcMesh.frameHeader else { return nil }
         let id = frame.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
@@ -390,12 +443,16 @@ struct FrameAssembler {
         let body = Data(frame.dropFirst(ArcMesh.frameHeader))
         if count == 1 { return (body, hops) }
 
-        partial = partial.filter { $0.value.from.timeIntervalSinceNow > -30 }
-        var entry = partial[id] ?? (count, hops, [:], Date())
+        let key = Key(link: link, id: id)
+        if partial[key] == nil, partial.count >= Self.maxPartial {
+            partial = partial.filter { $0.value.from.timeIntervalSinceNow > -30 }
+            if partial.count >= Self.maxPartial, let oldest = partial.min(by: { $0.value.from < $1.value.from })?.key { partial[oldest] = nil }
+        }
+        var entry = partial[key] ?? (count, hops, [:], Date())
         guard entry.count == count else { return nil }
         entry.pieces[index] = body
-        guard entry.pieces.count == count else { partial[id] = entry; return nil }
-        partial[id] = nil
+        guard entry.pieces.count == count else { partial[key] = entry; return nil }
+        partial[key] = nil
         return ((0..<count).reduce(into: Data()) { $0.append(entry.pieces[$1] ?? Data()) }, hops)
     }
 }

@@ -8,3 +8,8 @@ for (const f of ['index.html', 'sw.js', 'manifest.webmanifest', 'icon.svg']) awa
 
 // The iOS app ships its own copy, so it works offline from the very first launch.
 await cp('web/dist', 'ios-app/Web', { recursive: true })
+// WebKit does not treat file:// as 'self', so the bundled copy carries no CSP meta;
+// the iOS shell restricts navigation and the bridge instead.
+const { readFile, writeFile } = await import('node:fs/promises')
+const html = await readFile('ios-app/Web/index.html', 'utf8')
+await writeFile('ios-app/Web/index.html', html.replace(/<!--CSP-->.*?<!--\/CSP-->/s, ''))

@@ -6,7 +6,7 @@
 import VAULTS from './vault.json' with { type: 'json' }
 import {
   createPublicClient, createWalletClient, http, defineChain,
-  hexToBytes, bytesToHex, recoverTypedDataAddress, recoverMessageAddress, parseSignature, getAddress,
+  hexToBytes, bytesToHex, recoverTypedDataAddress, parseSignature, getAddress, parseEventLogs, parseAbiItem,
 } from 'viem'
 
 export const ARC_MAINNET = defineChain({
@@ -40,7 +40,7 @@ export const TOKENS = {
   1: { symbol: 'EURC', name: 'EURC', address: { 5042: '0xbEf5f6d51CB62b58e6A8f77868681825C6fe21c1', 5042002: '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a' } },
 }
 export const tokenAddress = (chainId, token = 0) => {
-  const a = TOKENS[token]?.address[chainId]
+  const a = knownToken(token) && knownChain(chainId) ? TOKENS[token].address[chainId] : null
   if (!a) throw new Error(`unsupported token ${token} on chain ${chainId}`)
   return a
 }
@@ -51,7 +51,9 @@ export const PREFIX_V2 = 'arcdrop:2:'
 export const PREFIX_V3 = 'arcdrop:3:' // voucher drawn on the ArcDropVault
 
 // Offline vault (contracts/ArcDropVault.sol): funds locked in advance, 24 h withdrawal notice.
-export const vaultAddress = (chainId) => VAULTS[chainId] ?? null
+export const vaultAddress = (chainId) => (Object.hasOwn(VAULTS, String(chainId)) ? VAULTS[chainId] : null)
+const knownChain = (chainId) => Number.isSafeInteger(chainId) && Object.hasOwn(CHAINS, chainId)
+const knownToken = (token) => Number.isSafeInteger(token) && Object.hasOwn(TOKENS, token)
 const VOUCHER_TYPES = {
   Voucher: [
     { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
@@ -123,8 +125,17 @@ function randomNonce() {
 // `account` is a viem LocalAccount (privateKeyToAccount).
 export const PAYMENT_TTL = 7 * 24 * 3600
 
+// Packet fields are fixed-width: refuse anything that would silently wrap.
+const U64 = 2n ** 64n, U32 = 2 ** 32
+function checkRanges({ value, validBefore, chainId }) {
+  if (BigInt(value) < 0n || BigInt(value) >= U64) throw new Error('amount out of range')
+  if (Number(validBefore) < 0 || Number(validBefore) >= U32) throw new Error('expiry out of range')
+  if (!knownChain(chainId)) throw new Error(`unknown chain ${chainId}`)
+}
+
 export async function createPayment({ account, to, amount, chainId = ARC_MAINNET.id, token = 0, vault = false, ttlSeconds = PAYMENT_TTL, now = Math.floor(Date.now() / 1000) }) {
   tokenAddress(chainId, token)
+  checkRanges({ value: typeof amount === 'bigint' ? amount : parseUsdc(amount), validBefore: now + ttlSeconds, chainId })
   if (vault) {
     if (!vaultAddress(chainId)) throw new Error(`no vault on chain ${chainId}`)
     const v = {
@@ -151,6 +162,7 @@ export async function createPayment({ account, to, amount, chainId = ARC_MAINNET
 // v2 (158 bytes):       token u8 | the v1 layout
 // v3 (vault voucher, 154 bytes): token u8 | chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65
 export function encodePayment(p) {
+  checkRanges(p)
   if (p.vault) {
     const buf = new Uint8Array(154)
     const dv = new DataView(buf.buffer)
@@ -190,7 +202,7 @@ export function decodePayment(text) {
       chainId: dv.getUint32(1), token, vault: true,
       from: getAddress(bytesToHex(buf.slice(5, 25))), to: getAddress(bytesToHex(buf.slice(25, 45))),
       value: dv.getBigUint64(45), validAfter: 0n, validBefore: BigInt(dv.getUint32(53)),
-      nonce: bytesToHex(buf.slice(57, 89)), signature: bytesToHex(buf.slice(89, 154)),
+      nonce: bytesToHex(buf.slice(57, 89)), signature: canonicalSignature(buf.slice(89, 154)),
     }
   }
   const v2 = raw.startsWith(PREFIX_V2)
@@ -207,7 +219,7 @@ export function decodePayment(text) {
   const validAfter = BigInt(dv.getUint32(o)); o += 4
   const validBefore = BigInt(dv.getUint32(o)); o += 4
   const nonce = bytesToHex(buf.slice(o, o + 32)); o += 32
-  const signature = bytesToHex(buf.slice(o, o + 65))
+  const signature = canonicalSignature(buf.slice(o, o + 65))
   return { chainId, token, from, to, value, validAfter, validBefore, nonce, signature }
 }
 
@@ -227,8 +239,11 @@ export function paymentLink(p, base) {
 // Offline check: the signature really comes from `from` and the payment has not expired.
 // It cannot tell whether `from` still has the funds; only Arc can.
 export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
-  if (!CHAINS[p.chainId]) return { ok: false, reason: `unknown chain ${p.chainId}` }
+  if (!knownChain(p.chainId)) return { ok: false, reason: `unknown chain ${p.chainId}` }
+  if (!knownToken(p.token ?? 0)) return { ok: false, reason: 'unknown token' }
   if (p.vault && !vaultAddress(p.chainId)) return { ok: false, reason: `no vault on chain ${p.chainId}` }
+  // A postdated payment would verify yet be unspendable until then.
+  if (BigInt(p.validAfter ?? 0n) > BigInt(now)) return { ok: false, reason: 'not yet valid' }
   const signer = p.vault
     ? await recoverTypedDataAddress({
       domain: vaultDomain(p.chainId), types: VOUCHER_TYPES, primaryType: 'Voucher',
@@ -242,7 +257,6 @@ export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
     })
   if (signer !== getAddress(p.from)) return { ok: false, reason: 'bad signature' }
   if (BigInt(now) >= p.validBefore) return { ok: false, reason: 'expired' }
-  if (!CHAINS[p.chainId]) return { ok: false, reason: `unknown chain ${p.chainId}` }
   return { ok: true }
 }
 
@@ -299,6 +313,55 @@ export async function settlePayment(p, { relayerAccount, rpcUrl }) {
   return { hash, status: receipt.status, blockNumber: receipt.blockNumber, url: `${chain.blockExplorers.default.url}/tx/${hash}` }
 }
 
+// ---------- proof of payment ----------
+// "The nonce is used" is NOT proof of payment: a payer can burn their own nonce (cancel it,
+// or reuse it in a payment to themselves) after handing you the packet. A payment counts as
+// paid only if a successful transaction moved exactly `value` of the token from `from` to
+// `to` under this nonce.
+const EV_AUTH_USED = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)')
+const EV_TRANSFER = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')
+const EV_REDEEMED = parseAbiItem('event Redeemed(address indexed token, address indexed from, address indexed to, uint256 value, bytes32 nonce)')
+const LOG_WINDOW = 9_999n // Arc RPC limit per eth_getLogs
+
+function receiptPays(receipt, p) {
+  if (receipt.status !== 'success') return false
+  const token = tokenAddress(p.chainId, p.token).toLowerCase()
+  if (p.vault) {
+    const vault = vaultAddress(p.chainId).toLowerCase()
+    return parseEventLogs({ abi: [EV_REDEEMED], logs: receipt.logs.filter((l) => l.address.toLowerCase() === vault) })
+      .some((e) => e.args.token.toLowerCase() === token && getAddress(e.args.from) === p.from && getAddress(e.args.to) === p.to
+        && e.args.value === p.value && e.args.nonce === p.nonce)
+  }
+  const tokenLogs = receipt.logs.filter((l) => l.address.toLowerCase() === token)
+  const used = parseEventLogs({ abi: [EV_AUTH_USED], logs: tokenLogs }).some((e) => getAddress(e.args.authorizer) === p.from && e.args.nonce === p.nonce)
+  const moved = parseEventLogs({ abi: [EV_TRANSFER], logs: tokenLogs }).some((e) => getAddress(e.args.from) === p.from && getAddress(e.args.to) === p.to && e.args.value === p.value)
+  return used && moved
+}
+
+// { paid: true, tx } | { paid: false, reason }. `txHash` (from our own settlement) is checked
+// first; otherwise the recent history is searched (`maxBlocks`, ~0.5 s per block on Arc).
+export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl } = {}) {
+  const client = publicClient(p.chainId, rpcUrl)
+  const explorer = (hash) => `${CHAINS[p.chainId].blockExplorers.default.url}/tx/${hash}`
+  if (txHash && /^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    const r = await client.getTransactionReceipt({ hash: txHash }).catch(() => null)
+    if (r && receiptPays(r, p)) return { paid: true, tx: explorer(txHash) }
+  }
+  const head = await client.getBlockNumber()
+  for (let to = head, scanned = 0n; scanned < maxBlocks && to > 0n; scanned += LOG_WINDOW + 1n, to -= LOG_WINDOW + 1n) {
+    const from = to > LOG_WINDOW ? to - LOG_WINDOW : 0n
+    const logs = p.vault
+      ? await client.getLogs({ address: vaultAddress(p.chainId), event: EV_REDEEMED, args: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to }, fromBlock: from, toBlock: to })
+      : await client.getLogs({ address: tokenAddress(p.chainId, p.token), event: EV_AUTH_USED, args: { authorizer: p.from, nonce: p.nonce }, fromBlock: from, toBlock: to })
+    for (const log of logs) {
+      const r = await client.getTransactionReceipt({ hash: log.transactionHash })
+      if (receiptPays(r, p)) return { paid: true, tx: explorer(log.transactionHash) }
+      if (!p.vault) return { paid: false, reason: 'nonce used by another transaction' }
+    }
+  }
+  return { paid: false, reason: 'no matching payment found' }
+}
+
 // ---------- vault deposits ----------
 // The owner signs an EIP-3009 ReceiveWithAuthorization to the vault; anyone online submits it.
 const RECEIVE_TYPES = { ReceiveWithAuthorization: TYPES.TransferWithAuthorization }
@@ -329,31 +392,66 @@ export async function vaultState(chainId, token, owner) {
 export const signedAt = (p) => Number(p.validBefore) - PAYMENT_TTL
 
 // ---------- receipts ----------
-// The recipient proves, offline, that the payment reached them: they sign its nonce.
-// Travels back over the mesh: arcdrop-ack:1:<nonce 32 | signature 65>.
-export const ACK_PREFIX = 'arcdrop-ack:1:'
+// The recipient proves, offline, that the payment reached them. They sign an EIP-712
+// Receipt binding the whole payment (never a raw hash chosen by someone else, which
+// would turn the auto-receipt into a signing oracle). Travels back over the mesh as
+// arcdrop-ack:2:<nonce 32 | signature 65>; the payer rebuilds the Receipt from the
+// payment they sent.
+export const ACK_PREFIX = 'arcdrop-ack:2:'
+const RECEIPT_TYPES = {
+  Receipt: [
+    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'vault', type: 'bool' },
+  ],
+}
+const receiptTyped = (p) => ({
+  domain: { name: 'ArcDrop Receipt', version: '1', chainId: p.chainId },
+  types: RECEIPT_TYPES, primaryType: 'Receipt',
+  message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, value: p.value, nonce: p.nonce, vault: !!p.vault },
+})
 
 export async function createAck(account, p) {
-  const signature = await account.signMessage({ message: { raw: p.nonce } })
+  const signature = await account.signTypedData(receiptTyped(p))
   return ACK_PREFIX + toB64url(new Uint8Array([...hexToBytes(p.nonce), ...hexToBytes(signature)]))
 }
 
-export async function readAck(text) {
-  const m = String(text).match(/arcdrop-ack:1:([A-Za-z0-9_-]{120,})/)
+// Which payment a receipt is about (to find it among sent payments). Throws on garbage.
+export function ackNonce(text) {
+  const m = String(text).match(/arcdrop-ack:2:([A-Za-z0-9_-]{120,})/)
   if (!m) throw new Error('not an ArcDrop receipt')
   const buf = fromB64url(m[1])
   if (buf.length !== 97) throw new Error('corrupted receipt')
-  const nonce = bytesToHex(buf.slice(0, 32))
-  const signer = await recoverMessageAddress({ message: { raw: nonce }, signature: bytesToHex(buf.slice(32)) })
-  return { nonce, signer }
+  return { nonce: bytesToHex(buf.slice(0, 32)), signature: canonicalSignature(buf.slice(32)) }
+}
+
+// True only if the payment's recipient signed this exact payment.
+export async function verifyAck(text, p) {
+  try {
+    const { nonce, signature } = ackNonce(text)
+    if (nonce !== p.nonce) return false
+    return (await recoverTypedDataAddress({ ...receiptTyped(p), signature })) === getAddress(p.to)
+  } catch { return false }
 }
 
 // ---------- payment requests ----------
 // The receiver sets the amount (merchant, split bill): arcdrop-req:1:<chainId u32 | token u8 | to 20 | value u64 | label utf8>
 export const REQ_PREFIX = 'arcdrop-req:1:'
 
+// Labels are shown to the payer: no control or bidi-override characters, at most 40 bytes,
+// never cut in the middle of a character.
+function cleanLabel(label) {
+  let out = ''
+  for (const ch of String(label).replace(/[\p{Cc}\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, '').trim()) {
+    if (new TextEncoder().encode(out + ch).length > 40) break
+    out += ch
+  }
+  return out
+}
+
 export function encodeRequest({ chainId, token = 0, to, value, label = '' }) {
-  const text = new TextEncoder().encode(label).slice(0, 40)
+  checkRanges({ value, validBefore: 0, chainId })
+  if (!knownToken(token)) throw new Error('unknown token')
+  const text = new TextEncoder().encode(cleanLabel(label))
   const buf = new Uint8Array(33 + text.length)
   const dv = new DataView(buf.buffer)
   dv.setUint32(0, chainId); buf[4] = token
@@ -364,17 +462,28 @@ export function encodeRequest({ chainId, token = 0, to, value, label = '' }) {
 }
 
 export function decodeRequest(text) {
-  const m = String(text).match(/arcdrop-req:1:([A-Za-z0-9_-]{40,})/)
+  const m = String(text).match(/arcdrop-req:1:([A-Za-z0-9_-]{44,})/)
   if (!m) return null
-  const buf = fromB64url(m[1])
-  if (buf.length < 33) return null
+  let buf
+  try { buf = fromB64url(m[1]) } catch { return null }
+  if (buf.length < 33 || buf.length > 73) return null
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
-  const token = buf[4]
-  if (!TOKENS[token]) return null
+  const chainId = dv.getUint32(0), token = buf[4]
+  if (!knownChain(chainId) || !knownToken(token)) return null
   return {
-    chainId: dv.getUint32(0), token, to: getAddress(bytesToHex(buf.slice(5, 25))),
-    value: dv.getBigUint64(25), label: new TextDecoder().decode(buf.slice(33)),
+    chainId, token, to: getAddress(bytesToHex(buf.slice(5, 25))),
+    value: dv.getBigUint64(25), label: cleanLabel(new TextDecoder().decode(buf.slice(33))),
   }
+}
+
+// One payment, one encoding: the contracts reject high-s signatures and v outside {27, 28},
+// so such packets would look valid offline yet never settle. Reject them up front.
+const HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n
+function canonicalSignature(sig) {
+  const s = BigInt(bytesToHex(sig.slice(32, 64)))
+  if (sig[64] !== 27 && sig[64] !== 28) throw new Error('non-canonical signature')
+  if (s === 0n || s > HALF_N) throw new Error('non-canonical signature')
+  return bytesToHex(sig)
 }
 
 function toB64url(bytes) {
@@ -383,7 +492,12 @@ function toB64url(bytes) {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+// Strict: the text must be exactly the canonical encoding of its bytes (no stray padding bits),
+// so the same payment can never travel under two different strings.
 function fromB64url(str) {
-  const s = atob(str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4))
-  return Uint8Array.from(s, (c) => c.charCodeAt(0))
+  let s
+  try { s = atob(str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4)) } catch { throw new Error('bad encoding') }
+  const bytes = Uint8Array.from(s, (c) => c.charCodeAt(0))
+  if (toB64url(bytes) !== str) throw new Error('non-canonical encoding')
+  return bytes
 }

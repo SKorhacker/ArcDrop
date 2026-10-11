@@ -1,16 +1,17 @@
-// Vercel function: same gateway logic as relayer/server.mjs.
-import { relay } from '../relayer/server.mjs'
+// Vercel function: same relay logic as relayer/server.mjs (validation, rate limits, CORS allowlist).
+import { relay, corsHeaders } from '../relayer/server.mjs'
 
 export default async function handler(req, res) {
-  res.setHeader('access-control-allow-origin', '*')
-  res.setHeader('access-control-allow-headers', 'content-type')
+  for (const [k, v] of Object.entries(corsHeaders(req.headers.origin))) res.setHeader(k, v)
   if (req.method === 'OPTIONS') return res.status(204).end()
-  if (req.method !== 'POST') return res.status(405).json({ error: 'method not allowed' })
+  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method not allowed' })
   try {
-    const { packet } = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
-    const { code, body } = await relay(packet)
-    res.status(code).send(JSON.stringify(body, (_, v) => (typeof v === 'bigint' ? v.toString() : v)))
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
+    const ip = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() || undefined
+    const { code, body: out } = await relay(body?.packet, { ip })
+    res.status(code).send(JSON.stringify(out))
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.shortMessage ?? e.message })
+    console.error(e)
+    res.status(400).json({ ok: false, error: 'invalid request' })
   }
 }
