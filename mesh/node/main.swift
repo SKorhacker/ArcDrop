@@ -9,11 +9,35 @@ final class Node: ArcMeshDelegate {
     let mesh = ArcMesh()
     init() { mesh.delegate = self }
     func mesh(_ mesh: ArcMesh, didReceive packet: String, hops: Int) {
-        print("💸 received over Bluetooth (\(hops) hops): \(packet.prefix(28))…")
+        let amount = ArcDropPacket.decode(packet)?.displayAmount ?? "?"
+        print("💸 \(amount) received over Bluetooth (\(hops) hop\(hops == 1 ? "" : "s"))")
         ArcDropRelay.shared.observe(packet)
+        report(packet)
     }
     func mesh(_ mesh: ArcMesh, peersChanged count: Int) { print("📡 nearby devices: \(count)") }
     func mesh(_ mesh: ArcMesh, log: String) { print("· \(log)") }
+}
+
+/// Prints the outcome once the gateway answers; keeps waiting while there is no internet.
+func report(_ packet: String) {
+    Task {
+        var announcedWait = false
+        for _ in 0..<1200 {
+            switch await ArcDropRelay.shared.state(of: packet) {
+            case .settled(let tx, let ms)?:
+                print("✅ settled on Arc\(ms.map { String(format: " in %.2f s", Double($0) / 1000) } ?? "")\(tx.map { " → \($0)" } ?? "")")
+                return
+            case .rejected(let reason)?:
+                print("⛔️ rejected: \(reason)")
+                return
+            case .queued?:
+                if !announcedWait { print("⏳ carried; settles as soon as this Mac has internet"); announcedWait = true }
+            case nil:
+                break
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
 }
 
 if CommandLine.arguments.count > 1 {
@@ -31,6 +55,7 @@ stdin.readabilityHandler = { handle in
         node.mesh.broadcast(String(text))
         ArcDropRelay.shared.observe(String(text))
         print("→ broadcasting to nearby devices")
+        report(String(text))
     }
 }
 RunLoop.main.run()

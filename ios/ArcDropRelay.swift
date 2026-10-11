@@ -86,7 +86,7 @@ actor ArcDropRelay {
     /// Set to the deployed ArcDrop gateway before building.
     static let defaultGateway = "https://arcdrop-pink.vercel.app"
 
-    enum State: Equatable { case queued, settled(tx: String?), rejected(String) }
+    enum State: Equatable { case queued, settled(tx: String?, ms: Int?), rejected(String) }
 
     // Keyed by the whole packet, not from+nonce: a forged copy reusing a real
     // nonce must not be able to get the genuine payment ignored.
@@ -135,7 +135,7 @@ actor ArcDropRelay {
             let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
             switch status {
             case 200 where body["ok"] as? Bool == true:
-                states[key] = .settled(tx: body["url"] as? String)
+                states[key] = .settled(tx: body["url"] as? String, ms: body["settleMs"] as? Int)
                 queue[key] = nil
             case 402:
                 continue    // payer not funded yet; keep carrying it
@@ -145,6 +145,11 @@ actor ArcDropRelay {
             }
         }
         scheduleRetry()
+    }
+
+    /// Where a payment stands, by packet text (`arcdrop:1:…`).
+    func state(of packet: String) -> State? {
+        ArcDropPacket.extract(from: packet).flatMap { states[$0] }
     }
 
     private func scheduleRetry() {
