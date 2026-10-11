@@ -88,7 +88,9 @@ actor ArcDropRelay {
 
     enum State: Equatable { case queued, settled(tx: String?), rejected(String) }
 
-    private var queue: [String: ArcDropPacket.Info] = [:]     // keyed by from+nonce
+    // Keyed by the whole packet, not from+nonce: a forged copy reusing a real
+    // nonce must not be able to get the genuine payment ignored.
+    private var queue: [String: ArcDropPacket.Info] = [:]
     private(set) var states: [String: State] = [:]
     private var retryTask: Task<Void, Never>?
     private let session: URLSession = {
@@ -109,7 +111,7 @@ actor ArcDropRelay {
     }
 
     func enqueue(_ info: ArcDropPacket.Info) async {
-        let key = info.from + info.nonce
+        let key = info.packet
         guard states[key] == nil else { return }    // same packet via another mesh path
         guard UInt32(Date().timeIntervalSince1970) < info.validBefore else {
             states[key] = .rejected("expired"); return
