@@ -1,0 +1,225 @@
+package app.arcdrop.android
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.WebMessageCompat
+import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Hosts the ArcDrop web app (bundled in assets, served from https://appassets.androidplatform.net,
+ * so it works offline and is a secure context for the camera) and gives it what a browser can't:
+ * the Bluetooth mesh, the share sheet (Quick Share), an encrypted key store and haptics.
+ *
+ * JS -> native: ArcMeshAndroid.postMessage(JSON) — a WebMessageListener that only exists on the
+ *               app's own origin, main frame only. Messages: broadcast, profile, presence, share,
+ *               haptic, saveKey (same protocol as the iOS app).
+ * native -> JS: arcdropReceive(packet, hops), arcdropReceipt, arcdropNearby, arcdropMeshPeers,
+ *               arcdropOpenURL, arcdropKeySaved.
+ */
+class MainActivity : Activity(), ArcMesh.Listener {
+
+    companion object {
+        const val ORIGIN = "https://appassets.androidplatform.net"
+        const val PAGE = "$ORIGIN/assets/web/index.html"
+        const val PERMISSIONS_REQUEST = 1
+        const val CAMERA_REQUEST = 2
+    }
+
+    private lateinit var webView: WebView
+    private lateinit var mesh: ArcMesh
+    private var loaded = false
+    private val pendingUrls = ArrayList<String>()
+    private var pendingCamera: PermissionRequest? = null
+    private var peers = 0
+
+    private val keyStore by lazy {
+        EncryptedSharedPreferences.create(
+            this, "arcdrop_wallet",
+            MasterKey.Builder(this).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        mesh = ArcMesh(this, this)
+
+        val assets = WebViewAssetLoader.Builder().addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this)).build()
+        webView = WebView(this)
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            allowFileAccess = false
+            allowContentAccess = false
+        }
+        webView.setBackgroundColor(0xFF000000.toInt())
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                assets.shouldInterceptRequest(request.url)
+
+            // Only the bundled app loads in the web view; https links (the explorer) open in the browser
+            // on a user tap; every other scheme is refused.
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url
+                if (url.toString().startsWith("$ORIGIN/")) return false
+                if (url.scheme == "https" && request.hasGesture()) startActivity(Intent(Intent.ACTION_VIEW, url))
+                return true
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                loaded = true
+                call("arcdropMeshPeers", peers)
+                pendingUrls.forEach { call("arcdropOpenURL", it) }
+                pendingUrls.clear()
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            // Camera for the QR scanner: only for our own page, and only once Android granted it.
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    if (request.origin.toString().trimEnd('/') != ORIGIN || !request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                        request.deny(); return@runOnUiThread
+                    }
+                    if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                    } else {
+                        pendingCamera = request
+                        requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_REQUEST)
+                    }
+                }
+            }
+        }
+
+        // The wallet key, decrypted from the Android keystore, injected before the page's scripts run.
+        val saved = keyStore.getString("key", null)
+        if (saved != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, "globalThis.ARCDROP_NATIVE_KEY = ${JSONObject.quote(saved)};", setOf(ORIGIN))
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(webView, "ArcMeshAndroid", setOf(ORIGIN)) { _, message, sourceOrigin, isMainFrame, _: JavaScriptReplyProxy ->
+                if (isMainFrame && sourceOrigin.toString().trimEnd('/') == ORIGIN) onBridge(message)
+            }
+        }
+
+        setContentView(webView)
+        handleIntent(intent)
+        webView.loadUrl(PAGE)
+        requestMeshPermissions()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val url = intent?.data?.takeIf { it.scheme == "arcdrop" }?.toString() ?: return
+        if (loaded) call("arcdropOpenURL", url) else if (pendingUrls.size < 10) pendingUrls.add(url)
+    }
+
+    override fun onDestroy() {
+        mesh.stop()
+        super.onDestroy()
+    }
+
+    // ---------------- permissions ----------------
+
+    private fun meshPermissions(): Array<String> =
+        if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE)
+        else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+
+    private fun requestMeshPermissions() {
+        val missing = meshPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) mesh.start() else requestPermissions(missing.toTypedArray(), PERMISSIONS_REQUEST)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            PERMISSIONS_REQUEST -> if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) mesh.start()
+            CAMERA_REQUEST -> {
+                val req = pendingCamera ?: return
+                pendingCamera = null
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) req.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) else req.deny()
+            }
+        }
+    }
+
+    // ---------------- JS -> native ----------------
+
+    private fun onBridge(message: WebMessageCompat) {
+        val body = try { JSONObject(message.data ?: return) } catch (e: Exception) { return }
+        when (body.optString("type")) {
+            "broadcast" -> body.optString("packet").takeIf { it.isNotEmpty() }?.let { mesh.broadcast(it) }
+            "profile" -> body.optString("address").takeIf { it.isNotEmpty() }?.let { mesh.setProfile(it, body.optString("name")) }
+            "presence" -> if (!body.optBoolean("on", true)) mesh.stopPresence()
+            "share" -> {
+                val text = listOf(body.optString("text"), body.optString("url")).filter { it.isNotEmpty() }.joinToString("\n")
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+                startActivity(Intent.createChooser(send, "Envoyer le paiement"))
+            }
+            "haptic" -> vibrate(body.optString("kind"))
+            "saveKey" -> {
+                // Never overwrite an existing wallet unless the user explicitly imported a key.
+                val key = body.optString("key").takeIf { Regex("^0x[0-9a-fA-F]{64}$").matches(it) } ?: return
+                val existing = keyStore.getString("key", null)
+                val ok = if (existing == null || body.optBoolean("replace", false)) keyStore.edit().putString("key", key).commit() else existing == key
+                call("arcdropKeySaved", ok)
+            }
+        }
+    }
+
+    private fun vibrate(kind: String) {
+        val vibrator = if (Build.VERSION.SDK_INT >= 31) (getSystemService(VibratorManager::class.java)).defaultVibrator else @Suppress("DEPRECATION") getSystemService(Vibrator::class.java)
+        val effect = when (kind) {
+            "light" -> VibrationEffect.createOneShot(15, VibrationEffect.DEFAULT_AMPLITUDE)
+            "error" -> VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1)
+            else -> VibrationEffect.createWaveform(longArrayOf(0, 20, 60, 30), -1)
+        }
+        vibrator?.vibrate(effect)
+    }
+
+    // ---------------- mesh -> JS ----------------
+
+    override fun onPayment(packet: String, hops: Int) = call("arcdropReceive", packet, hops)
+    override fun onReceipt(receipt: String) = call("arcdropReceipt", receipt)
+    override fun onPeers(count: Int) { peers = count; call("arcdropMeshPeers", count) }
+    override fun onNearby(peers: List<ArcMesh.NearbyPeer>) {
+        val list = JSONArray()
+        peers.forEach { list.put(JSONObject().put("address", it.address).put("name", it.name).put("rssi", it.rssi ?: JSONObject.NULL)) }
+        call("arcdropNearby", list)
+    }
+
+    /** Calls a global JS function with JSON-encoded arguments (no string concatenation of raw data). */
+    private fun call(function: String, vararg args: Any?) {
+        val json = JSONArray().apply { args.forEach { put(it ?: JSONObject.NULL) } }.toString()
+        runOnUiThread { webView.evaluateJavascript("globalThis.$function && globalThis.$function(...$json)", null) }
+    }
+}

@@ -13,3 +13,7 @@ await cp('web/dist', 'ios-app/Web', { recursive: true })
 const { readFile, writeFile } = await import('node:fs/promises')
 const html = await readFile('ios-app/Web/index.html', 'utf8')
 await writeFile('ios-app/Web/index.html', html.replace(/<!--CSP-->.*?<!--\/CSP-->/s, ''))
+
+// The Android app serves its copy from https://appassets.androidplatform.net, where 'self' works: keep the CSP.
+await mkdir('android-app/app/src/main/assets/web', { recursive: true })
+for (const f of ['index.html', 'app.js', 'manifest.webmanifest', 'icon.svg']) await cp(`web/dist/${f}`, `android-app/app/src/main/assets/web/${f}`)

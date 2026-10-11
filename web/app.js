@@ -28,7 +28,10 @@ const acct = {
 }
 
 // Inside the iOS app, the native side injects this handler (Bluetooth mesh, share sheet, Keychain).
+// iOS: webkit.messageHandlers.arcmesh. Android: ArcMeshAndroid (a WebMessageListener that
+// only exists on the app's own bundled origin) takes JSON strings.
 const mesh = globalThis.webkit?.messageHandlers?.arcmesh
+  ?? (globalThis.ArcMeshAndroid ? { postMessage: (m) => globalThis.ArcMeshAndroid.postMessage(JSON.stringify(m)) } : null)
 
 // ---------- wallet & settings ----------
 // In the iOS app the key also lives in the Keychain (injected before this script runs),
@@ -63,7 +66,9 @@ let token = store.get('token', 0) // 0 = USDC, 1 = EURC
 
 // Inside the iOS app the page is a local file: talk to (and link to) the public deployment.
 const PUBLIC_ORIGIN = 'https://arcdrop-pink.vercel.app'
-const webOrigin = /^https?:$/.test(location.protocol) ? location.origin : PUBLIC_ORIGIN
+// The Android app serves its bundled copy from https://appassets.androidplatform.net (local).
+const BUNDLED = location.protocol === 'file:' || location.hostname === 'appassets.androidplatform.net'
+const webOrigin = BUNDLED ? PUBLIC_ORIGIN : location.origin
 const gateway = () => (store.get('gateway', '') || webOrigin).replace(/\/$/, '')
 
 // Stored entries may be corrupted or from an older format: skip them instead of breaking the app.
@@ -513,7 +518,7 @@ $('signBtn').onclick = async () => {
   }
   const packet = encodePayment(p)
   // In the app, AirDrop an arcdrop:// link so the receiver's app opens it directly.
-  lastPayment = { p, packet, amount: value, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${location.protocol === 'file:' ? '/' : location.pathname}`) }
+  lastPayment = { p, packet, amount: value, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${BUNDLED ? '/' : location.pathname}`) }
   const sent = acct.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label, amount: value.toString() })
   if (!acct.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
@@ -990,6 +995,6 @@ $('importKey').onclick = () => {
   } catch { toast('Clé invalide') }
 }
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {})
+if ('serviceWorker' in navigator && !BUNDLED) navigator.serviceWorker.register('sw.js').catch(() => {})
 
 fitAmount(); renderWallet(); renderInbox(); renderSent(); renderWho(); announce(); handleHash(); probe()

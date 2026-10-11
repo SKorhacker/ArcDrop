@@ -32,7 +32,7 @@ const MAX_BODY = 4_000
 
 // Browsers may only call the gateway from the app itself (the iOS app's local page has origin "null").
 // This does not stop scripts, hence the rate limits below.
-const ALLOWED_ORIGINS = new Set(['https://arcdrop-pink.vercel.app', 'null', 'http://localhost:8787'])
+const ALLOWED_ORIGINS = new Set(['https://arcdrop-pink.vercel.app', 'null', 'http://localhost:8787', 'https://appassets.androidplatform.net'])
 export const corsHeaders = (origin) => (ALLOWED_ORIGINS.has(origin)
   ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'content-type', vary: 'origin' }
   : { vary: 'origin' })
