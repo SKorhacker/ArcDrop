@@ -1,5 +1,5 @@
 // Offline-first: the app must open in airplane mode, including from an AirDrop link.
-const CACHE = 'arcdrop-v4'
+const CACHE = 'arcdrop-v5'
 const ASSETS = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icon.svg']
 
 self.addEventListener('install', (e) => {

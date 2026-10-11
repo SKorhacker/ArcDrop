@@ -155,6 +155,7 @@
   .tx-state { font-size: 13px; color: var(--label-2); letter-spacing: 0; }
   .tx-state.pending { color: var(--orange); }
   .tx-state.failed { color: var(--red); }
+  .tx-state.delivered { color: var(--accent); }
   .details { padding: 0 16px 14px 70px; font-size: 15px; color: var(--label-2); }
   .details ol { list-style: none; margin: 0; padding: 0; }
   .details li { position: relative; padding: 3px 0 3px 18px; }
@@ -185,6 +186,29 @@
     transition: transform .45s var(--ease); pointer-events: none; }
   .toast.show { transform: translate(-50%, 0); }
 
+
+  /* ---------- nearby (Bluetooth) ---------- */
+  .nearby { display: flex; gap: 14px; overflow-x: auto; padding: 4px 16px 6px; scrollbar-width: none; }
+  .nearby::-webkit-scrollbar { display: none; }
+  .peer { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 66px; flex: none; font-size: 12px; letter-spacing: 0; }
+  .peer .av { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; color: #fff; font: 600 22px var(--round);
+    background: linear-gradient(180deg, #5AC8FA, #2196F3); position: relative; transition: transform .15s var(--ease); }
+  .peer[aria-pressed="true"] .av { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--accent); }
+  .peer:active .av { transform: scale(.92); }
+  .peer .nm { max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .peer .ds { color: var(--label-2); font-size: 11px; margin-top: -3px; }
+  .peer .av::after { content: ""; position: absolute; right: 1px; bottom: 1px; width: 14px; height: 14px; border-radius: 50%; background: var(--green); border: 2.5px solid var(--bg); }
+  .unit-btn { font: 600 24px var(--round); color: var(--accent); display: inline-flex; align-items: center; gap: 2px; }
+  .unit-btn svg { width: 14px; height: 14px; }
+  .who { font-size: 13px; color: var(--label-2); margin: 7px 32px 0; letter-spacing: 0; min-height: 0; }
+  .who b { color: var(--label); font-weight: 600; }
+  .stepper { display: inline-flex; align-items: center; gap: 4px; background: var(--fill); border-radius: 10px; padding: 2px; }
+  .stepper button { width: 34px; height: 30px; border-radius: 8px; font-size: 20px; color: var(--label); }
+  .stepper button:active { background: var(--cell); }
+  .stepper span { min-width: 24px; text-align: center; font-weight: 600; }
+  .req-amount { width: 100%; border: 0; outline: 0; background: transparent; text-align: center; font: 600 44px var(--round); color: var(--label); padding: 6px 0 0; }
+  .req-status { text-align: center; font-size: 15px; color: var(--label-2); margin-top: 6px; }
+  .req-status b { color: var(--green); }
 
   /* ---------- confirmation ---------- */
   .confirm { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -217,8 +241,13 @@
 <section id="tab-pay" data-title="Payer">
   <h1 class="large">Payer</h1>
   <div class="amount" id="amountBox">
-    <div class="amount-line"><input id="payAmount" placeholder="0" readonly inputmode="none" tabindex="-1" aria-label="Montant en USDC"><span class="unit">USDC</span></div>
+    <div class="amount-line"><input id="payAmount" placeholder="0" readonly inputmode="none" tabindex="-1" aria-label="Montant"><button class="unit-btn" id="unitBtn" aria-label="Changer de devise"><span id="unitLabel">USDC</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m7 10 5 5 5-5"/></svg></button></div>
     <div class="avail" id="avail"></div>
+  </div>
+
+  <div id="nearbyBox" hidden>
+    <div class="group-title" style="margin-top:14px">À proximité · Bluetooth</div>
+    <div class="nearby" id="nearby"></div>
   </div>
 
   <div class="group" style="margin-top:12px">
@@ -228,6 +257,8 @@
       <button id="scanTo" type="button" class="accent-text" aria-label="Scanner l'adresse"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></button>
     </label>
   </div>
+
+  <p class="who" id="payWho" hidden></p>
 
   <div class="keypad" id="keypad" role="group" aria-label="Pavé numérique">
     <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
@@ -248,6 +279,7 @@
   </div>
   <video id="video" playsinline muted hidden></video>
   <div class="group" style="margin-top:20px">
+    <button class="cell has-icon" id="askBtn"><span class="tile" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="cell-main">Demander un montant</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
     <button class="cell has-icon" id="scanPay"><span class="tile" style="background:#2196F3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></span><span class="cell-main">Scanner un paiement</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
     <button class="cell has-icon" id="pastePay"><span class="tile" style="background:#FF9500"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span><span class="cell-main">Coller un paiement</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
   </div>
@@ -265,9 +297,12 @@
   <div class="balance">
     <div class="lbl">Solde</div>
     <div class="bal" id="balance">—</div>
+    <div class="cell-sub" id="balance2" style="margin:-6px 0 12px" hidden></div>
     <button class="addr-row" id="copyAddr2" aria-label="Copier mon adresse"><span id="myAddr"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
   </div>
   <div class="group">
+    <label class="cell has-icon"><span class="tile" style="background:#FF9500"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/></svg></span><span style="flex:none">Ton nom</span>
+      <input id="myName" placeholder="visible en Bluetooth" maxlength="24" style="text-align:right;color:var(--label-2)" autocomplete="off"></label>
     <label class="cell has-icon"><span class="tile" style="background:#5856D6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span><span style="flex:none">Réseau</span>
       <select id="chainSel"><option value="5042002">Arc testnet</option><option value="5042">Arc mainnet</option></select></label>
     <label class="cell has-icon"><span class="tile" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg></span><span style="flex:none">Passerelle</span>
@@ -297,6 +332,21 @@
     <button id="tMesh"><span class="tile" style="background:linear-gradient(180deg,#64D2FF,#0A84FF)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg></span>Bluetooth</button>
   </div>
   <p class="footnote" id="transportHint">Aucun réseau nécessaire. Le premier appareil qui capte règle le paiement sur Arc.</p>
+</div>
+
+<div class="sheet" id="reqSheet" role="dialog" aria-modal="true" aria-label="Demander un montant" hidden>
+  <div class="grabber"></div>
+  <div class="sheet-top"><span class="pill settled">Demande</span>
+    <button class="close" id="closeReq" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+  <input class="req-amount" id="reqAmount" inputmode="decimal" placeholder="0" aria-label="Montant demandé" autocomplete="off">
+  <div style="text-align:center"><button class="unit-btn" id="reqUnit" style="font-size:20px"><span id="reqUnitLabel">USDC</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m7 10 5 5 5-5"/></svg></button></div>
+  <div class="group" style="margin:14px 0 0;background:var(--bg)">
+    <label class="cell"><span style="flex:none">Libellé</span><input id="reqLabel" placeholder="Crêpe, places de concert…" maxlength="40" style="text-align:right" autocomplete="off"></label>
+    <div class="cell"><span class="cell-main">Partager entre</span><span class="stepper"><button id="splitMinus" aria-label="Moins">−</button><span id="splitN">1</span><button id="splitPlus" aria-label="Plus">+</button></span></div>
+  </div>
+  <p class="footnote" id="splitInfo" style="margin:8px 4px 0;text-align:center" hidden></p>
+  <div class="qr" id="reqQr"></div>
+  <p class="req-status" id="reqStatus">Le payeur scanne ce QR : montant et adresse sont déjà remplis.</p>
 </div>
 
 <nav class="tabbar glass" aria-label="Navigation principale" role="tablist">

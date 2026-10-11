@@ -5,12 +5,16 @@
 // connects, subscribes, writes), so phones talk to each other directly with
 // no network.
 //
-// What travels: ArcDrop payments (157-byte signed USDC authorizations).
-// They are store-and-forward: a node keeps every payment it has seen and
+// Messages (envelope = type u8 | body):
+//   1 payment  signed USDC/EURC authorization (157 or 158 bytes), flooded
+//   2 hello    "I'm here": wallet address 20 | display name (UTF-8), neighbors only
+//   3 receipt  recipient's signature over the payment nonce (97 bytes), flooded
+//
+// Payments and receipts are store-and-forward: a node keeps what it has seen,
 // hands it to each new peer it meets, and floods new ones with a hop limit.
-// So a payment can cross a festival in pockets, hours later, until any node
-// with internet settles it on Arc. Packets are self-authenticating (the
-// recipient is inside the signature), so nodes need no trust in each other.
+// So a payment can cross a crowd in pockets until any node with internet
+// settles it on Arc. Everything is self-authenticating (signatures), so nodes
+// need no trust in each other.
 //
 // Shared by the iOS app and the macOS relay node.
 //
@@ -19,20 +23,38 @@ import CoreBluetooth
 import CryptoKit
 import Foundation
 
+public struct NearbyPeer: Equatable {
+    public let address: String // 0x… wallet address
+    public let name: String
+    public let rssi: Int?      // dBm; closer to 0 = nearer
+}
+
 public protocol ArcMeshDelegate: AnyObject {
-    /// A payment packet (`arcdrop:1:…`) seen for the first time.
+    /// A payment (`arcdrop:1:…` / `arcdrop:2:…`) seen for the first time.
     func mesh(_ mesh: ArcMesh, didReceive packet: String, hops: Int)
+    /// A receipt (`arcdrop-ack:1:…`) seen for the first time.
+    func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String)
+    func mesh(_ mesh: ArcMesh, nearbyChanged peers: [NearbyPeer])
     func mesh(_ mesh: ArcMesh, peersChanged count: Int)
     func mesh(_ mesh: ArcMesh, log: String)
+}
+
+public extension ArcMeshDelegate {
+    func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String) {}
+    func mesh(_ mesh: ArcMesh, nearbyChanged peers: [NearbyPeer]) {}
 }
 
 public final class ArcMesh: NSObject {
     public static let serviceUUID = CBUUID(string: "A7C0D509-5E1F-4B8E-9A3B-1D2C3E4F5A60")
     static let packetUUID = CBUUID(string: "A7C0D509-5E1F-4B8E-9A3B-1D2C3E4F5A61")
 
+    enum Kind: UInt8 { case payment = 1, hello = 2, receipt = 3 }
+
     static let maxHops: UInt8 = 7
     static let maxStored = 500
     static let frameHeader = 7 // msgId 4 | index 1 | count 1 | hops 1
+    static let helloEvery: TimeInterval = 5
+    static let nearbyTimeout: TimeInterval = 20
 
     public weak var delegate: ArcMeshDelegate?
     public private(set) var peerCount = 0
@@ -41,90 +63,123 @@ public final class ArcMesh: NSObject {
     private var central: CBCentralManager!
     private var peripheral: CBPeripheralManager!
     private var characteristic: CBMutableCharacteristic?
+    private var timer: DispatchSourceTimer?
 
     // Remote peripherals we connected to, and the characteristic we write to.
     private var outbound: [UUID: (peripheral: CBPeripheral, char: CBCharacteristic?)] = [:]
     // Remote centrals subscribed to our characteristic.
     private var subscribers: [UUID: CBCentral] = [:]
 
-    // Store-and-forward: packet bytes by content hash, with the hop count we got it at.
-    private var store: [Data: (bytes: Data, hops: UInt8, seen: Date)] = [:]
+    // Store-and-forward: envelopes by content hash, with the hop count we got them at.
+    private var store: [Data: (envelope: Data, hops: UInt8, seen: Date)] = [:]
     private var assembler = FrameAssembler()
-    // Frames waiting for the peripheral manager to have room again.
     private var pendingNotify: [(Data, [CBCentral]?)] = []
+
+    // Presence: who is behind each link, and how strong their signal is.
+    private var profile: Data?
+    private var hellos: [UUID: (address: String, name: String, seen: Date)] = [:]
+    private var rssi: [UUID: Int] = [:]
+    private var lastNearby: [NearbyPeer] = []
 
     public override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: queue)
         peripheral = CBPeripheralManager(delegate: self, queue: queue)
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: Self.helloEvery)
+        t.setEventHandler { [weak self] in self?.tick() }
+        t.resume()
+        timer = t
     }
 
     // MARK: Public API
 
-    /// Signs nothing, trusts nothing: just floods a payment to every neighbor.
+    /// Floods a payment or a receipt to every neighbor. Signs nothing, trusts nothing.
     public func broadcast(_ text: String) {
-        guard let bytes = Self.packetBytes(from: text) else { log("not an ArcDrop packet"); return }
+        guard let envelope = Self.envelope(from: text) else { log("not an ArcDrop message"); return }
         queue.async {
-            guard self.remember(bytes, hops: 0) else { self.log("already carrying this payment"); return }
-            self.send(bytes, hops: 0, to: nil)
+            guard self.remember(envelope, hops: 0) else { return }
+            self.send(envelope, hops: 0, to: nil)
         }
     }
 
-    /// Payments currently carried by this device.
-    public var carried: [String] {
-        queue.sync { store.values.map { Self.packetText(from: $0.bytes) } }
+    /// Who this device is, announced to neighbors so they can pay it by name.
+    public func setProfile(address: String, name: String) {
+        guard let addr = Data(hex: address), addr.count == 20 else { return }
+        var body = Data([Kind.hello.rawValue]) + addr
+        body.append(Data(name.prefix(32).utf8))
+        queue.async {
+            self.profile = body
+            self.send(body, hops: 0, to: nil)
+        }
     }
 
-    // MARK: Packet encoding (same 157-byte layout as core/arcdrop.js)
+    // MARK: Text <-> envelope (same encodings as core/arcdrop.js)
 
-    static let prefix = "arcdrop:1:"
-    static let packetLength = 157
-
-    public static func packetBytes(from text: String) -> Data? {
-        guard let range = text.range(of: prefix) else { return nil }
-        let body = text[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-        var b64 = body.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        while b64.count % 4 != 0 { b64.append("=") }
-        guard let data = Data(base64Encoded: b64), data.count == packetLength else { return nil }
-        return data
+    static func envelope(from text: String) -> Data? {
+        for (prefix, kind, lengths) in [("arcdrop:2:", Kind.payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:1:", .receipt, [97])] {
+            guard let range = text.range(of: prefix) else { continue }
+            let body = text[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+            guard let data = Data(base64URL: String(body)), lengths.contains(data.count) else { return nil }
+            return Data([kind.rawValue]) + data
+        }
+        return nil
     }
 
-    public static func packetText(from bytes: Data) -> String {
-        prefix + bytes.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
+    static func text(from envelope: Data) -> String? {
+        guard let first = envelope.first, let kind = Kind(rawValue: first) else { return nil }
+        let body = Data(envelope.dropFirst())
+        switch (kind, body.count) {
+        case (.payment, 157): return "arcdrop:1:" + body.base64URL
+        case (.payment, 158): return "arcdrop:2:" + body.base64URL
+        case (.receipt, 97): return "arcdrop-ack:1:" + body.base64URL
+        default: return nil
+        }
     }
 
     // MARK: Store & flood
 
     /// Returns false if we already had it.
-    private func remember(_ bytes: Data, hops: UInt8) -> Bool {
-        let key = Data(SHA256.hash(data: bytes))
+    private func remember(_ envelope: Data, hops: UInt8) -> Bool {
+        let key = Data(SHA256.hash(data: envelope))
         guard store[key] == nil else { return false }
         if store.count >= Self.maxStored, let oldest = store.min(by: { $0.value.seen < $1.value.seen })?.key {
             store[oldest] = nil
         }
-        store[key] = (bytes, hops, Date())
+        store[key] = (envelope, hops, Date())
         return true
     }
 
-    private func received(_ bytes: Data, hops: UInt8) {
-        guard bytes.count == Self.packetLength, remember(bytes, hops: hops) else { return }
-        let text = Self.packetText(from: bytes)
-        log("payment received (\(hops) hop\(hops == 1 ? "" : "s"))")
-        DispatchQueue.main.async { self.delegate?.mesh(self, didReceive: text, hops: Int(hops)) }
-        if hops < Self.maxHops { send(bytes, hops: hops, to: nil) }
+    private func received(_ envelope: Data, hops: UInt8, from link: UUID) {
+        guard let first = envelope.first, let kind = Kind(rawValue: first) else { return }
+        if kind == .hello { return heard(envelope, from: link) }
+        guard let text = Self.text(from: envelope), remember(envelope, hops: hops) else { return }
+        if kind == .payment {
+            log("payment received (\(hops) hop\(hops == 1 ? "" : "s"))")
+            DispatchQueue.main.async { self.delegate?.mesh(self, didReceive: text, hops: Int(hops)) }
+        } else {
+            log("receipt received")
+            DispatchQueue.main.async { self.delegate?.mesh(self, didReceiveReceipt: text) }
+        }
+        if hops < Self.maxHops { send(envelope, hops: hops, to: nil) }
+    }
+
+    private func heard(_ envelope: Data, from link: UUID) {
+        let body = Data(envelope.dropFirst())
+        guard body.count >= 20, body.count <= 52 else { return }
+        let address = "0x" + body.prefix(20).map { String(format: "%02x", $0) }.joined()
+        let name = String(decoding: body.dropFirst(20), as: UTF8.self)
+        hellos[link] = (address, name, Date())
+        publishNearby()
     }
 
     /// Sends to every neighbor, or only to `peer` (a newly met device catching up).
-    private func send(_ bytes: Data, hops: UInt8, to peer: UUID?) {
-        let frames = Self.frames(for: bytes, hops: hops + 1, maxLength: 180)
+    private func send(_ envelope: Data, hops: UInt8, to peer: UUID?) {
         // As a central, write to peripherals we connected to.
         for (id, link) in outbound where peer == nil || peer == id {
             guard let char = link.char else { continue }
             let max = link.peripheral.maximumWriteValueLength(for: .withoutResponse)
-            for frame in Self.frames(for: bytes, hops: hops + 1, maxLength: max) {
+            for frame in Self.frames(for: envelope, hops: hops + 1, maxLength: max) {
                 link.peripheral.writeValue(frame, for: char, type: .withoutResponse)
             }
         }
@@ -132,7 +187,7 @@ public final class ArcMesh: NSObject {
         let targets = subscribers.filter { peer == nil || peer == $0.key }.map(\.value)
         guard !targets.isEmpty, let characteristic else { return }
         let max = targets.map { $0.maximumUpdateValueLength }.min() ?? 20
-        for frame in (max >= 180 ? frames : Self.frames(for: bytes, hops: hops + 1, maxLength: max)) {
+        for frame in Self.frames(for: envelope, hops: hops + 1, maxLength: max) {
             if !peripheral.updateValue(frame, for: characteristic, onSubscribedCentrals: targets) {
                 pendingNotify.append((frame, targets))
             }
@@ -140,10 +195,33 @@ public final class ArcMesh: NSObject {
     }
 
     private func catchUp(_ peer: UUID) {
-        for item in store.values where item.hops < Self.maxHops { send(item.bytes, hops: item.hops, to: peer) }
+        if let profile { send(profile, hops: 0, to: peer) }
+        for item in store.values where item.hops < Self.maxHops { send(item.envelope, hops: item.hops, to: peer) }
     }
 
-    // MARK: Framing (BLE packets can be smaller than a payment)
+    /// Every few seconds: say hello, refresh signal strength, forget silent neighbors.
+    private func tick() {
+        if let profile { send(profile, hops: 0, to: nil) }
+        for link in outbound.values where link.char != nil { link.peripheral.readRSSI() }
+        hellos = hellos.filter { $0.value.seen.timeIntervalSinceNow > -Self.nearbyTimeout }
+        publishNearby()
+    }
+
+    private func publishNearby() {
+        // One device can be linked twice (as central and as peripheral): merge by address.
+        var best: [String: NearbyPeer] = [:]
+        for (link, hello) in hellos {
+            let candidate = NearbyPeer(address: hello.address, name: hello.name, rssi: rssi[link])
+            if let current = best[hello.address], (current.rssi ?? -200) >= (candidate.rssi ?? -200) { continue }
+            best[hello.address] = candidate
+        }
+        let peers = best.values.sorted { ($0.rssi ?? -200) > ($1.rssi ?? -200) }
+        guard peers != lastNearby else { return }
+        lastNearby = peers
+        DispatchQueue.main.async { self.delegate?.mesh(self, nearbyChanged: peers) }
+    }
+
+    // MARK: Framing (BLE packets can be smaller than a message)
 
     static func frames(for bytes: Data, hops: UInt8, maxLength: Int) -> [Data] {
         let chunk = max(1, min(maxLength, 512) - frameHeader)
@@ -160,8 +238,15 @@ public final class ArcMesh: NSObject {
         }
     }
 
-    private func ingest(frame: Data) {
-        if let (bytes, hops) = assembler.add(frame) { received(bytes, hops: hops) }
+    private func ingest(frame: Data, from link: UUID) {
+        if let (bytes, hops) = assembler.add(frame) { received(bytes, hops: hops, from: link) }
+    }
+
+    private func dropLink(_ id: UUID) {
+        hellos[id] = nil
+        rssi[id] = nil
+        updatePeers()
+        publishNearby()
     }
 
     private func updatePeers() {
@@ -189,6 +274,7 @@ extension ArcMesh: CBCentralManagerDelegate, CBPeripheralDelegate {
     public func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi: NSNumber) {
         guard outbound[p.identifier] == nil else { return }
         outbound[p.identifier] = (p, nil)
+        self.rssi[p.identifier] = rssi.intValue
         p.delegate = self
         central.connect(p)
     }
@@ -203,7 +289,7 @@ extension ArcMesh: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         outbound[p.identifier] = nil
-        updatePeers()
+        dropLink(p.identifier)
     }
 
     public func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
@@ -221,7 +307,12 @@ extension ArcMesh: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     public func peripheral(_ p: CBPeripheral, didUpdateValueFor char: CBCharacteristic, error: Error?) {
-        if let value = char.value { ingest(frame: value) }
+        if let value = char.value { ingest(frame: value, from: p.identifier) }
+    }
+
+    public func peripheral(_ p: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
+        guard error == nil else { return }
+        rssi[p.identifier] = RSSI.intValue
     }
 }
 
@@ -246,7 +337,7 @@ extension ArcMesh: CBPeripheralManagerDelegate {
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
         for request in requests {
-            if let value = request.value { ingest(frame: value) }
+            if let value = request.value { ingest(frame: value, from: request.central.identifier) }
         }
         if let first = requests.first { peripheral.respond(to: first, withResult: .success) }
     }
@@ -259,7 +350,7 @@ extension ArcMesh: CBPeripheralManagerDelegate {
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         subscribers[central.identifier] = nil
-        updatePeers()
+        dropLink(central.identifier)
     }
 
     public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
@@ -284,7 +375,7 @@ extension CBManagerState {
     }
 }
 
-/// Reassembles frames into packets. Input comes from any nearby device, so it
+/// Reassembles frames into messages. Input comes from any nearby device, so it
 /// is bounds-checked and incomplete messages expire.
 struct FrameAssembler {
     private var partial: [UInt32: (count: Int, hops: UInt8, pieces: [Int: Data], from: Date)] = [:]
@@ -305,5 +396,31 @@ struct FrameAssembler {
         guard entry.pieces.count == count else { partial[id] = entry; return nil }
         partial[id] = nil
         return ((0..<count).reduce(into: Data()) { $0.append(entry.pieces[$1] ?? Data()) }, hops)
+    }
+}
+
+extension Data {
+    init?(base64URL text: String) {
+        var b64 = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64.append("=") }
+        self.init(base64Encoded: b64)
+    }
+
+    var base64URL: String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+
+    init?(hex: String) {
+        let s = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+        guard s.count % 2 == 0 else { return nil }
+        var out = Data(capacity: s.count / 2)
+        var i = s.startIndex
+        while i < s.endIndex {
+            let j = s.index(i, offsetBy: 2)
+            guard let b = UInt8(s[i..<j], radix: 16) else { return nil }
+            out.append(b)
+            i = j
+        }
+        self = out
     }
 }

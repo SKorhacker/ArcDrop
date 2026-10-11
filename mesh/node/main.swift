@@ -14,7 +14,11 @@ final class Node: ArcMeshDelegate {
         ArcDropRelay.shared.observe(packet)
         report(packet)
     }
-    func mesh(_ mesh: ArcMesh, peersChanged count: Int) { print("📡 nearby devices: \(count)") }
+    func mesh(_ mesh: ArcMesh, peersChanged count: Int) { print("📡 linked devices: \(count)") }
+    func mesh(_ mesh: ArcMesh, nearbyChanged peers: [NearbyPeer]) {
+        print("👥 nearby: " + (peers.isEmpty ? "nobody" : peers.map { "\($0.name.isEmpty ? String($0.address.prefix(10)) : $0.name) (\($0.rssi.map { "\($0) dBm" } ?? "?"))" }.joined(separator: ", ")))
+    }
+    func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String) { print("🧾 receipt carried over Bluetooth") }
     func mesh(_ mesh: ArcMesh, log: String) { print("· \(log)") }
 }
 
@@ -51,7 +55,7 @@ stdin.readabilityHandler = { handle in
     let data = handle.availableData
     guard !data.isEmpty else { handle.readabilityHandler = nil; return } // stdin closed
     guard let line = String(data: data, encoding: .utf8) else { return }
-    for text in line.split(separator: "\n") where text.contains("arcdrop:1:") {
+    for text in line.split(separator: "\n") where text.contains("arcdrop:") {
         node.mesh.broadcast(String(text))
         ArcDropRelay.shared.observe(String(text))
         print("→ broadcasting to nearby devices")

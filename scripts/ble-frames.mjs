@@ -7,7 +7,8 @@ import { createPayment, encodePayment } from '../core/arcdrop.js'
 const [to, amount = '0.1', parts = '2'] = process.argv.slice(2)
 const payer = privateKeyToAccount(process.env.RELAYER_PRIVATE_KEY)
 const packet = encodePayment(await createPayment({ account: payer, to, amount, chainId: 5042002 }))
-const bytes = Buffer.from(packet.slice('arcdrop:1:'.length), 'base64url')
+// envelope: kind 1 (payment) | packet bytes
+const bytes = Buffer.concat([Buffer.from([1]), Buffer.from(packet.slice('arcdrop:1:'.length), 'base64url')])
 
 // frame = msgId u32 | index u8 | count u8 | hops u8 | chunk
 const id = Buffer.from(crypto.getRandomValues(new Uint8Array(4)))

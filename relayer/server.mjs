@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { privateKeyToAccount } from 'viem/accounts'
-import { decodePayment, verifyPayment, checkPayment, simulatePayment, settlePayment, formatUsdc } from '../core/arcdrop.js'
+import { decodePayment, verifyPayment, checkPayment, simulatePayment, settlePayment, formatUsdc, symbol } from '../core/arcdrop.js'
 
 const PORT = Number(process.env.PORT ?? 8787)
 const RPC_URL = process.env.ARC_RPC_URL
@@ -41,13 +41,13 @@ export async function relay(text) {
   try { p = decodePayment(text) } catch (e) { return { code: 400, body: { ok: false, error: e.message } } }
   // The gateway pays the gas, so it only relays payments that move real money:
   // otherwise anyone could drain it with free 0-USDC payments from empty wallets.
-  if (relayer && p.value < MIN_VALUE) return { code: 400, body: { ok: false, error: `minimum ${formatUsdc(MIN_VALUE)} USDC` } }
+  if (relayer && p.value < MIN_VALUE) return { code: 400, body: { ok: false, error: `minimum ${formatUsdc(MIN_VALUE)} ${symbol(p.token)}` } }
   const check = await verifyPayment(p)
   if (!check.ok) return { code: 400, body: { ok: false, error: check.reason } }
 
   const status = await checkPayment(p, { rpcUrl: RPC_URL })
   if (status.settled) return { code: 200, body: { ok: true, alreadySettled: true } }
-  if (!status.funded) return { code: 402, body: { ok: false, error: `payer has ${formatUsdc(status.payerBalance)} USDC, needs ${formatUsdc(p.value)}` } }
+  if (!status.funded) return { code: 402, body: { ok: false, error: `payer has ${formatUsdc(status.payerBalance)} ${symbol(p.token)}, needs ${formatUsdc(p.value)}` } }
 
   if (!relayer) {
     await simulatePayment(p, { rpcUrl: RPC_URL })
@@ -63,7 +63,7 @@ export async function relay(text) {
       .finally(() => setTimeout(() => inflight.delete(key), 60_000).unref()))
   }
   const result = await inflight.get(key)
-  console.log(`settled ${formatUsdc(p.value)} USDC ${p.from} -> ${p.to} in ${result.settleMs}ms ${result.url}`)
+  console.log(`settled ${formatUsdc(p.value)} ${symbol(p.token)} ${p.from} -> ${p.to} in ${result.settleMs}ms ${result.url}`)
   return { code: 200, body: { ok: result.status === 'success', ...result } }
 }
 

@@ -17,7 +17,9 @@
 import Foundation
 
 enum ArcDropPacket {
+    // v1 = USDC (157 bytes); v2 = token u8 + v1 layout (158 bytes), token 1 = EURC.
     static let prefix = "arcdrop:1:"
+    static let prefixV2 = "arcdrop:2:"
     static let byteLength = 157
 
     struct Info: Equatable {
@@ -29,18 +31,22 @@ enum ArcDropPacket {
         let value: UInt64
         let validBefore: UInt32
         let nonce: String
+        var token: UInt8 = 0
+
+        var symbol: String { token == 1 ? "EURC" : "USDC" }
 
         var displayAmount: String {
             let whole = value / 1_000_000
             var frac = String(format: "%06llu", value % 1_000_000)
             while frac.hasSuffix("0") { frac.removeLast() }
-            return frac.isEmpty ? "\(whole) USDC" : "\(whole).\(frac) USDC"
+            return frac.isEmpty ? "\(whole) \(symbol)" : "\(whole).\(frac) \(symbol)"
         }
     }
 
     /// Finds the first packet in arbitrary text (a bitchat message, a link…).
     static func extract(from text: String) -> String? {
-        guard text.count < 4_000, let start = text.range(of: prefix) else { return nil }
+        guard text.count < 4_000, let start = text.range(of: prefixV2) ?? text.range(of: prefix) else { return nil }
+        let head = String(text[start])
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         var body = ""
         for scalar in text[start.upperBound...].unicodeScalars {
@@ -48,17 +54,20 @@ enum ArcDropPacket {
             body.unicodeScalars.append(scalar)
             if body.count > 400 { return nil }
         }
-        return body.count >= 150 ? prefix + body : nil
+        return body.count >= 150 ? head + body : nil
     }
 
     static func decode(_ text: String) -> Info? {
         guard let packet = extract(from: text) else { return nil }
+        let v2 = packet.hasPrefix(prefixV2)
         var b64 = String(packet.dropFirst(prefix.count))
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64.append("=") }
-        guard let data = Data(base64Encoded: b64), data.count == byteLength else { return nil }
-        let bytes = [UInt8](data)
+        guard let data = Data(base64Encoded: b64), data.count == byteLength + (v2 ? 1 : 0) else { return nil }
+        let token: UInt8 = v2 ? data[data.startIndex] : 0
+        guard token <= 1 else { return nil }
+        let bytes = [UInt8](v2 ? data.dropFirst() : data)
 
         func uint(_ offset: Int, _ size: Int) -> UInt64 {
             bytes[offset..<offset + size].reduce(0) { $0 << 8 | UInt64($1) }
@@ -74,7 +83,8 @@ enum ArcDropPacket {
             to: hex(24, 20),
             value: uint(44, 8),
             validBefore: UInt32(uint(56, 4)),
-            nonce: hex(60, 32)
+            nonce: hex(60, 32),
+            token: token
         )
     }
 }

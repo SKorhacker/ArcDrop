@@ -3,11 +3,13 @@
 // The web app is bundled in the app (Web/), so it works offline from the first launch.
 //
 // JS → native: webkit.messageHandlers.arcmesh.postMessage({ type, … })
-//   { type: "broadcast", packet }        flood a signed payment over Bluetooth
+//   { type: "broadcast", packet }        flood a signed payment or a receipt over Bluetooth
+//   { type: "profile", address, name }   announce this wallet to nearby devices
 //   { type: "share", url, text }         open the share sheet (AirDrop)
-//   { type: "haptic", kind }             success / error vibration
+//   { type: "haptic", kind }             light / success / error vibration
 //   { type: "saveKey", key }             store the wallet key in the Keychain
-// native → JS: arcdropReceive(packet), arcdropMeshPeers(count), arcdropOpenURL(url)
+// native → JS: arcdropReceive(packet, hops), arcdropReceipt(text), arcdropNearby([{address,name,rssi}]),
+//              arcdropMeshPeers(count), arcdropOpenURL(url)
 //              ARCDROP_NATIVE_KEY is injected before the page's scripts run.
 
 import Security
@@ -64,7 +66,9 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         case "broadcast":
             guard let packet = body["packet"] as? String else { return }
             mesh.broadcast(packet)
-            ArcDropRelay.shared.observe(packet) // settle right away if this phone is online
+            ArcDropRelay.shared.observe(packet) // settle right away if this phone is online (ignores receipts)
+        case "profile":
+            if let address = body["address"] as? String { mesh.setProfile(address: address, name: body["name"] as? String ?? "") }
         case "share":
             var items: [Any] = []
             if let text = body["text"] as? String { items.append(text) }
@@ -75,8 +79,11 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         case "saveKey":
             if let key = body["key"] as? String { Keychain.save(key) }
         case "haptic":
-            let kind = body["kind"] as? String
-            UINotificationFeedbackGenerator().notificationOccurred(kind == "error" ? .error : .success)
+            switch body["kind"] as? String {
+            case "light": UISelectionFeedbackGenerator().selectionChanged()
+            case "error": UINotificationFeedbackGenerator().notificationOccurred(.error)
+            default: UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
         default:
             break
         }
@@ -86,15 +93,21 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
 
     func mesh(_ mesh: ArcMesh, didReceive packet: String, hops: Int) {
         ArcDropRelay.shared.observe(packet)
-        call("arcdropReceive", packet)
+        call("arcdropReceive", packet, hops)
     }
 
     func mesh(_ mesh: ArcMesh, peersChanged count: Int) { call("arcdropMeshPeers", count) }
 
+    func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String) { call("arcdropReceipt", receipt) }
+
+    func mesh(_ mesh: ArcMesh, nearbyChanged peers: [NearbyPeer]) {
+        call("arcdropNearby", peers.map { ["address": $0.address, "name": $0.name, "rssi": $0.rssi.map { $0 as Any } ?? NSNull()] })
+    }
+
     func mesh(_ mesh: ArcMesh, log: String) { print("[mesh] \(log)") }
 
-    private func call(_ function: String, _ argument: Any) {
-        guard let data = try? JSONSerialization.data(withJSONObject: [argument], options: [.fragmentsAllowed]),
+    private func call(_ function: String, _ arguments: Any...) {
+        guard let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.fragmentsAllowed]),
               let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("globalThis.\(function) && globalThis.\(function)(...\(json))")
     }

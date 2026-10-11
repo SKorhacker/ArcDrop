@@ -57,3 +57,35 @@ const status = await checkPayment(p)
 assert.equal(status.settled, false)
 assert.equal(status.funded, false)
 console.log('status check ok', status)
+
+// ---------- EURC (v2 packets) ----------
+{
+  const { createPayment, encodePayment, decodePayment, verifyPayment, simulatePayment, extractPacket } = await import('../core/arcdrop.js')
+  const e = await createPayment({ account: payer, to: payee.address, amount: '3.5', chainId: 5042002, token: 1 })
+  const text = encodePayment(e)
+  assert.ok(text.startsWith('arcdrop:2:'))
+  assert.equal(extractPacket(`hey ${text}`), text)
+  const back = decodePayment(text)
+  assert.equal(back.token, 1)
+  assert.deepEqual(back, { ...e })
+  assert.deepEqual(await verifyPayment(back), { ok: true })
+  // a v2 packet relabeled as USDC must not verify
+  assert.equal((await verifyPayment({ ...back, token: 0 })).reason, 'bad signature')
+  const zero = await createPayment({ account: payer, to: payee.address, amount: '0', chainId: 5042002, token: 1 })
+  await simulatePayment(zero)
+  console.log('EURC payment: encode/decode/verify + simulation on Arc testnet ok')
+}
+
+// ---------- receipts & requests ----------
+{
+  const { createPayment, createAck, readAck, encodeRequest, decodeRequest } = await import('../core/arcdrop.js')
+  const q = await createPayment({ account: payer, to: payee.address, amount: '1' })
+  const ack = await createAck(payee, q)
+  const r = await readAck(`✓ ${ack}`)
+  assert.equal(r.nonce, q.nonce)
+  assert.equal(r.signer, payee.address)
+  const req = encodeRequest({ chainId: 5042002, token: 1, to: payee.address, value: 12_500_000n, label: 'Crêpe nutella 🍫' })
+  assert.deepEqual(decodeRequest(`scan: ${req}`), { chainId: 5042002, token: 1, to: payee.address, value: 12_500_000n, label: 'Crêpe nutella 🍫' })
+  assert.equal(decodeRequest('nothing here'), null)
+  console.log('receipts + payment requests ok')
+}
