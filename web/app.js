@@ -19,6 +19,8 @@ if (!key) { key = generatePrivateKey(); store.set('key', key) }
 let account = privateKeyToAccount(key)
 let chainId = store.get('chain', 5042)
 const gateway = () => (store.get('gateway', '') || location.origin).replace(/\/$/, '')
+// Stored entries may be corrupted or from an older format: skip them instead of breaking the app.
+const tryDecode = (packet) => { try { return decodePayment(packet) } catch { return null } }
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
 const explorer = () => CHAINS[chainId].blockExplorers.default.url
 
@@ -49,6 +51,7 @@ async function refreshBalance() {
   try {
     const b = await publicClient(chainId).readContract({ address: USDC, abi: USDC_ABI, functionName: 'balanceOf', args: [account.address] })
     $('balance').textContent = `${formatUsdc(b)} USDC`
+    store.set('lastBalance', { chainId, value: b.toString(), at: Date.now() })
   } catch { /* offline or RPC hiccup; keep last value */ }
 }
 
@@ -86,6 +89,15 @@ $('signBtn').onclick = async () => {
   try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Montant invalide') }
   if (value <= 0n) return toast('Montant invalide')
   if (getAddress(to) === account.address) return toast("C'est ta propre adresse")
+  // Offline spending cap: never promise more than the last balance seen on Arc,
+  // minus what is already promised and not yet settled.
+  const last = store.get('lastBalance')
+  if (!last || last.chainId !== chainId) return toast('Ouvre l\'app une fois en ligne pour connaître ton solde')
+  const promised = store.get('sent', []).filter((s) => s.status === 'pending')
+    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId)
+    .reduce((sum, q) => sum + q.value, 0n)
+  const available = BigInt(last.value) - promised
+  if (value > available) return toast(`Solde hors ligne disponible : ${formatUsdc(available > 0n ? available : 0n)} USDC`)
   const p = await createPayment({ account, to, amount: value, chainId })
   const packet = encodePayment(p)
   lastPayment = { p, packet, link: paymentLink(p, location.href) }
@@ -202,7 +214,7 @@ async function settleAll() {
   settling = true
   try {
     const inbox = store.get('inbox', [])
-    for (const item of inbox.filter((i) => i.status === 'pending')) {
+    for (const item of inbox.filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
       Object.assign(item, await settleOne(item.packet))
       store.set('inbox', inbox); renderInbox()
     }
@@ -239,7 +251,9 @@ async function settleOne(packet) {
 async function refreshSent() {
   const sent = store.get('sent', [])
   for (const s of sent.filter((s) => s.status === 'pending')) {
-    try { if ((await checkPayment(decodePayment(s.packet))).settled) s.status = 'settled' } catch {}
+    const p = tryDecode(s.packet)
+    if (!p) continue
+    try { if ((await checkPayment(p)).settled) s.status = 'settled' } catch {}
   }
   store.set('sent', sent); renderSent()
 }
@@ -259,7 +273,8 @@ function steps(item) {
 function renderInbox() {
   const inbox = store.get('inbox', [])
   $('inbox').innerHTML = inbox.length ? inbox.map((item) => {
-    const p = decodePayment(item.packet)
+    const p = tryDecode(item.packet)
+    if (!p) return ''
     const mine = p.to === account.address
     return `<div class="card"><div class="item"><div><div class="big">${formatUsdc(p.value)} USDC</div>
       <div class="addr">${mine ? 'de' : 'relais'} ${short(p.from)}${mine ? '' : ` → ${short(p.to)}`}</div></div>
@@ -270,7 +285,8 @@ function renderInbox() {
 function renderSent() {
   const sent = store.get('sent', [])
   $('sent').innerHTML = sent.length ? sent.map((s) => {
-    const p = decodePayment(s.packet)
+    const p = tryDecode(s.packet)
+    if (!p) return ''
     return `<div class="card item"><div><div>${formatUsdc(p.value)} USDC → ${short(p.to)}</div>
       <div class="muted">${new Date(s.at).toLocaleString('fr-FR')}</div></div><span class="tag ${s.status}">${LABEL[s.status]}</span></div>`
   }).join('') : '<p class="muted">Rien pour l\'instant.</p>'

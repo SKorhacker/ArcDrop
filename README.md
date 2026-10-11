@@ -25,7 +25,7 @@ Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend:
 |---|---|---|
 | **QR code** | Payer shows a QR, receiver scans it in the app (camera, offline) | Working in the web app |
 | **AirDrop** | "AirDrop" opens the iOS share sheet with a link `…/#p=arcdrop:1:…`; the receiver's offline-cached app imports it | Working in the web app (iOS ↔ iOS) |
-| **Bluetooth mesh** | Payment pasted as a bitchat message rides the BLE mesh. With the [bitchat patch](ios/), every bitchat node that has internet forwards the packet to the gateway automatically | Stock bitchat: works today (copy/paste). Patched bitchat: written, **not compiled yet** |
+| **Bluetooth mesh** | Payment pasted as a bitchat message rides the BLE mesh. With the [bitchat patch](ios/), every bitchat node that has internet forwards the packet to the gateway automatically, and `/pay arcdrop:1:…` floods it across the mesh | Stock bitchat: works today (copy/paste). Relay (`ArcDropRelay.swift`): compiled and tested against the gateway. Hooks + `/pay`: written, need an Xcode build |
 
 ## What's verified
 
@@ -64,7 +64,9 @@ git apply ../arcdrop/ios/bitchat-arcdrop.patch
 # set ArcDropRelay.defaultGateway to your deployed URL, then build with Xcode
 ```
 
-The patch adds `Services/ArcDropRelay.swift` (packet decoder + relay queue) and three one-line hooks: on every received public/private message and on every sent message. bitchat is public domain (Unlicense).
+The patch adds `Services/ArcDropRelay.swift` (packet decoder + relay queue), three one-line hooks (every received public/private message, every sent message) and extends `/pay` to accept ArcDrop payments. Unlike cashu tokens, they need no "public channel" confirmation: only the named recipient can receive them, so flooding the mesh is the point. bitchat is public domain (Unlicense).
+
+`scripts/swift-check.sh` compiles the relay without Xcode and runs it against a local gateway: valid → settled, unfunded → stays queued, forged → rejected, and a genuine packet still settles when a forged copy reaches the node first.
 
 ## Layout
 
@@ -80,12 +82,11 @@ test/                  tests, incl. Arc mainnet simulation
 
 ## Limits (on purpose, for an MVP)
 
-- **Offline, a payment is a promise.** The receiver can verify the signature offline, but cannot know whether the payer still has the funds until a node reaches Arc. The app shows "pending" until it is final.
+- **Offline, a payment is a promise.** The receiver can verify the signature offline, but cannot know whether the payer still has the funds until a node reaches Arc. The app shows "pending" until it is final, and the payer's app refuses to sign more than the last balance it saw on Arc minus payments still pending.
 - The demo wallet key lives in the browser's storage: keep small amounts on it.
 - AirDrop only works between Apple devices; QR and bitchat cover the rest.
 
 ## Roadmap
 
 - Sign payments directly inside bitchat (`/pay 5 @alice`), no web app needed.
-- Spending limits per offline session, to bound the "promise" risk.
 - Arc opt-in privacy (confidential amounts) once it ships.

@@ -7,4 +7,6 @@
 - `ChatTransportEventCoordinator.handlePublicMessage` (public mesh channel)
 - `ChatOutgoingCoordinator.sendMessage` (the sender settles right away if online)
 
-**Status: not compiled yet.** This Mac has no full Xcode and its Command Line Tools Swift toolchain is broken, so neither file has been type-checked. Build with Xcode before the demo.
+It also extends `/pay` (`CommandProcessor.swift`) to send ArcDrop payments to the current DM or the public mesh.
+
+**Status:** `ArcDropRelay.swift` compiles and passes `scripts/swift-check.sh` (Command Line Tools + VFS overlay workaround). The hooks and the `/pay` change touch app types, so they need a full Xcode build: this Mac has no Xcode and SwiftPM cannot even compile bitchat's manifest with these Command Line Tools.

@@ -164,6 +164,38 @@ index 0000000..6ec56c3
 +
 +    private func retryDone() { retryTask = nil }
 +}
+diff --git a/bitchat/Services/CommandProcessor.swift b/bitchat/Services/CommandProcessor.swift
+index c37aa3d..0d20d68 100644
+--- a/bitchat/Services/CommandProcessor.swift
++++ b/bitchat/Services/CommandProcessor.swift
+@@ -509,12 +509,26 @@ final class CommandProcessor {
+     private func handlePay(_ args: String) -> CommandResult {
+         var parts = args.trimmed.split(separator: " ").map(String.init)
+         guard !parts.isEmpty else {
+-            return .success(message: String(localized: "command.pay.usage", defaultValue: "usage: /pay <token> — paste a cashu token: /pay cashuA…", comment: "Usage hint for /pay"))
++            return .success(message: String(localized: "command.pay.usage", defaultValue: "usage: /pay <token> — paste a cashu token (/pay cashuA…) or an ArcDrop payment (/pay arcdrop:1:…)", comment: "Usage hint for /pay"))
+         }
+ 
+         let confirmedPublic = parts.count > 1 && parts.last?.lowercased() == "public"
+         if confirmedPublic { parts.removeLast() }
+ 
++        // ArcDrop: unlike cashu, the recipient is inside the signature, so the
++        // packet is safe to flood across the whole mesh: the more nodes carry it,
++        // the sooner one with internet settles it on Arc.
++        if let arc = ArcDropPacket.decode(args) {
++            ArcDropRelay.shared.observe(arc.packet)
++            let text = "💸 \(arc.displayAmount) → \(arc.to.prefix(6))…\(arc.to.suffix(4)) (ArcDrop)\n\(arc.packet)"
++            if let peerID = contextProvider?.selectedPrivateChatPeer {
++                contextProvider?.sendPrivateMessage(text, to: peerID)
++            } else {
++                contextProvider?.sendPublicMessage(text)
++            }
++            return .success(message: "sent \(arc.displayAmount) via the mesh — it settles on Arc as soon as any node is online; only \(arc.to.prefix(6))…\(arc.to.suffix(4)) can receive it")
++        }
++
+         guard parts.count == 1, let token = CashuTokenDecoder.bareToken(from: parts[0]) else {
+             return .error(message: String(localized: "command.pay.not_token", defaultValue: "that doesn't look like a cashu token — expected cashuA… or cashuB…", comment: "Error when /pay input has no cashu prefix"))
+         }
 diff --git a/bitchat/ViewModels/ChatOutgoingCoordinator.swift b/bitchat/ViewModels/ChatOutgoingCoordinator.swift
 index 1bb3e21..e2f0de7 100644
 --- a/bitchat/ViewModels/ChatOutgoingCoordinator.swift
