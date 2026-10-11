@@ -11,7 +11,8 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { privateKeyToAccount } from 'viem/accounts'
-import { decodePayment, verifyPayment, checkPayment, simulatePayment, settlePayment, formatUsdc, symbol } from '../core/arcdrop.js'
+import { createWalletClient, http as viemHttp } from 'viem'
+import { decodePayment, verifyPayment, checkPayment, simulatePayment, settlePayment, formatUsdc, symbol, depositCall, publicClient, CHAINS, vaultAddress } from '../core/arcdrop.js'
 
 const PORT = Number(process.env.PORT ?? 8787)
 const RPC_URL = process.env.ARC_RPC_URL
@@ -67,12 +68,33 @@ export async function relay(text) {
   return { code: 200, body: { ok: result.status === 'success', ...result } }
 }
 
+// Locks funds in the offline vault from the owner's EIP-3009 signature; the gateway pays the gas.
+export async function deposit(d) {
+  if (!d || !vaultAddress(d.chainId)) return { code: 400, body: { ok: false, error: 'no vault on this chain' } }
+  if (BigInt(d.value) < MIN_VALUE) return { code: 400, body: { ok: false, error: `minimum ${formatUsdc(MIN_VALUE)} ${symbol(d.token)}` } }
+  const call = depositCall(d)
+  const client = publicClient(d.chainId, RPC_URL)
+  if (!relayer) {
+    await client.simulateContract({ ...call, account: d.from })
+    return { code: 200, body: { ok: true, simulated: true } }
+  }
+  await client.simulateContract({ ...call, account: relayer }) // bad signature or no funds: fails here, for free
+  const wallet = createWalletClient({ account: relayer, chain: CHAINS[d.chainId], transport: viemHttp(RPC_URL) })
+  const hash = await wallet.writeContract(call)
+  const receipt = await client.waitForTransactionReceipt({ hash, pollingInterval: 150 })
+  return { code: 200, body: { ok: receipt.status === 'success', hash, url: `${CHAINS[d.chainId].blockExplorers.default.url}/tx/${hash}` } }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'OPTIONS') return json(res, 204, {})
     if (req.method === 'POST' && req.url === '/api/relay') {
       const { packet } = JSON.parse(await body(req))
       const { code, body: out } = await relay(packet)
+      return json(res, code, out)
+    }
+    if (req.method === 'POST' && req.url === '/api/deposit') {
+      const { code, body: out } = await deposit(JSON.parse(await body(req)).deposit)
       return json(res, code, out)
     }
     if (req.method === 'GET' && req.url === '/api/info') {

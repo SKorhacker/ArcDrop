@@ -6,7 +6,7 @@
 // no network.
 //
 // Messages (envelope = type u8 | body):
-//   1 payment  signed USDC/EURC authorization (157 or 158 bytes), flooded
+//   1 payment  signed USDC/EURC authorization (157/158 bytes) or vault voucher (154), flooded
 //   2 hello    "I'm here": wallet address 20 | display name (UTF-8), neighbors only
 //   3 receipt  recipient's signature over the payment nonce (97 bytes), flooded
 //
@@ -117,7 +117,7 @@ public final class ArcMesh: NSObject {
     // MARK: Text <-> envelope (same encodings as core/arcdrop.js)
 
     static func envelope(from text: String) -> Data? {
-        for (prefix, kind, lengths) in [("arcdrop:2:", Kind.payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:1:", .receipt, [97])] {
+        for (prefix, kind, lengths) in [("arcdrop:3:", Kind.payment, [154]), ("arcdrop:2:", .payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:1:", .receipt, [97])] {
             guard let range = text.range(of: prefix) else { continue }
             let body = text[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
             guard let data = Data(base64URL: String(body)), lengths.contains(data.count) else { return nil }
@@ -132,6 +132,7 @@ public final class ArcMesh: NSObject {
         switch (kind, body.count) {
         case (.payment, 157): return "arcdrop:1:" + body.base64URL
         case (.payment, 158): return "arcdrop:2:" + body.base64URL
+        case (.payment, 154): return "arcdrop:3:" + body.base64URL
         case (.receipt, 97): return "arcdrop-ack:1:" + body.base64URL
         default: return nil
         }

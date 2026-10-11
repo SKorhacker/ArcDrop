@@ -33,3 +33,8 @@ print("interleaved + garbage ok")
 precondition(ArcDropPacket.decode(args[0])?.symbol == "USDC")
 precondition(ArcDropPacket.decode(args[1])?.symbol == "EURC")
 print("relay decodes v1 (USDC) and v2 (EURC):", ArcDropPacket.decode(args[1])!.displayAmount)
+if args.count > 3 {
+    let v = ArcDropPacket.decode(args[3])
+    precondition(v?.vault == true && v?.displayAmount == "0.7 USDC", "relay decodes v3 (vault voucher)")
+    print("relay decodes v3 (vault voucher):", v!.displayAmount)
+}

@@ -308,6 +308,14 @@
     <label class="cell has-icon"><span class="tile" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg></span><span style="flex:none">Passerelle</span>
       <input id="gateway" placeholder="ce site" style="text-align:right;color:var(--label-2)" autocomplete="off"></label>
   </div>
+  <div class="group-title">Coffre hors ligne</div>
+  <div class="group">
+    <div class="cell has-icon"><span class="tile" style="background:#AF52DE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span class="cell-main">Dans le coffre</span><span class="cell-sub" id="vaultBal">—</span></div>
+    <button class="cell has-icon" id="vaultAdd"><span class="tile" style="background:#AF52DE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="cell-main">Mettre de côté…</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <button class="cell has-icon" id="vaultOut"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg></span><span class="cell-main" id="vaultOutLabel">Retirer…</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+  </div>
+  <p class="footnote" id="vaultInfo">Tes paiements hors ligne puisent d'abord dans le coffre. Ils sont garantis : un retrait demande 24 h de préavis, le temps que tout soit réglé.</p>
+
   <div class="group" style="margin-top:20px">
     <button class="cell has-icon" id="exportKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/></svg></span><span class="cell-main">Exporter la clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
     <button class="cell has-icon" id="importKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></span><span class="cell-main">Importer une clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
@@ -321,7 +329,7 @@
 <div class="scrim" id="scrim" hidden></div>
 <div class="sheet" id="payOut" role="dialog" aria-modal="true" aria-labelledby="outAmount" hidden>
   <div class="grabber"></div>
-  <div class="sheet-top"><span class="pill pending">Signé · en attente</span>
+  <div class="sheet-top"><span class="pill pending" id="outPill">Signé · en attente</span>
     <button class="close" id="closeSheet" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
   <div class="big" id="outAmount"></div>
   <div class="to mono" id="outTo"></div>

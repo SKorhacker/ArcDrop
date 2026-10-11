@@ -19,7 +19,8 @@
     "viem": "^2.57.4"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "solc": "^0.8.28"
   },
   "type": "module"
 }

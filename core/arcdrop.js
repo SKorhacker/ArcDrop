@@ -3,6 +3,7 @@
 // (QR, AirDrop, Bluetooth mesh), and anyone online can submit it to Arc.
 // The recipient is part of the signature, so whoever relays it cannot redirect funds.
 
+import VAULTS from './vault.json' with { type: 'json' }
 import {
   createPublicClient, createWalletClient, http, defineChain,
   hexToBytes, bytesToHex, recoverTypedDataAddress, recoverMessageAddress, parseSignature, getAddress,
@@ -47,6 +48,31 @@ export const symbol = (token = 0) => TOKENS[token]?.symbol ?? '?'
 
 export const PREFIX = 'arcdrop:1:'
 export const PREFIX_V2 = 'arcdrop:2:'
+export const PREFIX_V3 = 'arcdrop:3:' // voucher drawn on the ArcDropVault
+
+// Offline vault (contracts/ArcDropVault.sol): funds locked in advance, 24 h withdrawal notice.
+export const vaultAddress = (chainId) => VAULTS[chainId] ?? null
+const VOUCHER_TYPES = {
+  Voucher: [
+    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' }, { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' },
+  ],
+}
+const vaultDomain = (chainId) => ({ name: 'ArcDropVault', version: '1', chainId, verifyingContract: vaultAddress(chainId) })
+export const VAULT_ABI = [
+  { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'voucherUsed', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'bytes32' }], outputs: [{ type: 'bool' }] },
+  { type: 'function', name: 'withdrawAmount', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'withdrawUnlocksAt', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'redeem', stateMutability: 'nonpayable', inputs: [
+    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'value', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'v', type: 'uint8' }, { name: 'r', type: 'bytes32' }, { name: 's', type: 'bytes32' }], outputs: [] },
+  { type: 'function', name: 'depositWithAuthorization', stateMutability: 'nonpayable', inputs: [
+    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'value', type: 'uint256' }, { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'v', type: 'uint8' }, { name: 'r', type: 'bytes32' }, { name: 's', type: 'bytes32' }], outputs: [] },
+  { type: 'function', name: 'requestWithdraw', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [] },
+  { type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [{ type: 'address' }], outputs: [] },
+]
 
 const TYPES = {
   TransferWithAuthorization: [
@@ -97,8 +123,17 @@ function randomNonce() {
 // `account` is a viem LocalAccount (privateKeyToAccount).
 export const PAYMENT_TTL = 7 * 24 * 3600
 
-export async function createPayment({ account, to, amount, chainId = ARC_MAINNET.id, token = 0, ttlSeconds = PAYMENT_TTL, now = Math.floor(Date.now() / 1000) }) {
+export async function createPayment({ account, to, amount, chainId = ARC_MAINNET.id, token = 0, vault = false, ttlSeconds = PAYMENT_TTL, now = Math.floor(Date.now() / 1000) }) {
   tokenAddress(chainId, token)
+  if (vault) {
+    if (!vaultAddress(chainId)) throw new Error(`no vault on chain ${chainId}`)
+    const v = {
+      token: tokenAddress(chainId, token), from: account.address, to: getAddress(to),
+      value: typeof amount === 'bigint' ? amount : parseUsdc(amount), validBefore: BigInt(now + ttlSeconds), nonce: randomNonce(),
+    }
+    const signature = await account.signTypedData({ domain: vaultDomain(chainId), types: VOUCHER_TYPES, primaryType: 'Voucher', message: v })
+    return { chainId, token, vault: true, from: v.from, to: v.to, value: v.value, validAfter: 0n, validBefore: v.validBefore, nonce: v.nonce, signature }
+  }
   const message = {
     from: account.address,
     to: getAddress(to),
@@ -114,7 +149,18 @@ export async function createPayment({ account, to, amount, chainId = ARC_MAINNET
 // Compact binary layout so a payment fits a small QR code and a couple of BLE fragments.
 // v1 (USDC, 157 bytes): chainId u32 | from 20 | to 20 | value u64 | validAfter u32 | validBefore u32 | nonce 32 | sig 65
 // v2 (158 bytes):       token u8 | the v1 layout
+// v3 (vault voucher, 154 bytes): token u8 | chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65
 export function encodePayment(p) {
+  if (p.vault) {
+    const buf = new Uint8Array(154)
+    const dv = new DataView(buf.buffer)
+    buf[0] = p.token ?? 0
+    dv.setUint32(1, p.chainId)
+    buf.set(hexToBytes(p.from), 5); buf.set(hexToBytes(p.to), 25)
+    dv.setBigUint64(45, BigInt(p.value)); dv.setUint32(53, Number(p.validBefore))
+    buf.set(hexToBytes(p.nonce), 57); buf.set(hexToBytes(p.signature), 89)
+    return PREFIX_V3 + toB64url(buf)
+  }
   const v2 = (p.token ?? 0) !== 0
   const buf = new Uint8Array(v2 ? 158 : 157)
   const dv = new DataView(buf.buffer)
@@ -134,6 +180,19 @@ export function encodePayment(p) {
 export function decodePayment(text) {
   const raw = extractPacket(text)
   if (!raw) throw new Error('not an ArcDrop payment')
+  if (raw.startsWith(PREFIX_V3)) {
+    const buf = fromB64url(raw.slice(PREFIX_V3.length))
+    if (buf.length !== 154) throw new Error('corrupted payment')
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+    const token = buf[0]
+    if (!TOKENS[token]) throw new Error('unknown token')
+    return {
+      chainId: dv.getUint32(1), token, vault: true,
+      from: getAddress(bytesToHex(buf.slice(5, 25))), to: getAddress(bytesToHex(buf.slice(25, 45))),
+      value: dv.getBigUint64(45), validAfter: 0n, validBefore: BigInt(dv.getUint32(53)),
+      nonce: bytesToHex(buf.slice(57, 89)), signature: bytesToHex(buf.slice(89, 154)),
+    }
+  }
   const v2 = raw.startsWith(PREFIX_V2)
   const buf = fromB64url(raw.slice(PREFIX.length))
   if (buf.length !== (v2 ? 158 : 157)) throw new Error('corrupted payment')
@@ -157,7 +216,7 @@ export function decodePayment(text) {
 export function extractPacket(text) {
   let t = String(text)
   try { t = decodeURIComponent(t) } catch { /* not URI-encoded */ }
-  const m = t.match(/arcdrop:[12]:[A-Za-z0-9_-]{150,}/)
+  const m = t.match(/arcdrop:[123]:[A-Za-z0-9_-]{150,}/)
   return m ? m[0] : null
 }
 
@@ -169,11 +228,18 @@ export function paymentLink(p, base) {
 // It cannot tell whether `from` still has the funds; only Arc can.
 export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
   if (!CHAINS[p.chainId]) return { ok: false, reason: `unknown chain ${p.chainId}` }
-  const signer = await recoverTypedDataAddress({
-    domain: domain(p.chainId, p.token ?? 0), types: TYPES, primaryType: 'TransferWithAuthorization',
-    message: { from: p.from, to: p.to, value: p.value, validAfter: p.validAfter, validBefore: p.validBefore, nonce: p.nonce },
-    signature: p.signature,
-  })
+  if (p.vault && !vaultAddress(p.chainId)) return { ok: false, reason: `no vault on chain ${p.chainId}` }
+  const signer = p.vault
+    ? await recoverTypedDataAddress({
+      domain: vaultDomain(p.chainId), types: VOUCHER_TYPES, primaryType: 'Voucher',
+      message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, value: p.value, validBefore: p.validBefore, nonce: p.nonce },
+      signature: p.signature,
+    })
+    : await recoverTypedDataAddress({
+      domain: domain(p.chainId, p.token ?? 0), types: TYPES, primaryType: 'TransferWithAuthorization',
+      message: { from: p.from, to: p.to, value: p.value, validAfter: p.validAfter, validBefore: p.validBefore, nonce: p.nonce },
+      signature: p.signature,
+    })
   if (signer !== getAddress(p.from)) return { ok: false, reason: 'bad signature' }
   if (BigInt(now) >= p.validBefore) return { ok: false, reason: 'expired' }
   if (!CHAINS[p.chainId]) return { ok: false, reason: `unknown chain ${p.chainId}` }
@@ -185,25 +251,41 @@ export function publicClient(chainId, rpcUrl) {
   return createPublicClient({ chain: CHAINS[chainId], transport: http(rpcUrl), pollingInterval: 150 })
 }
 
-function txArgs(p) {
-  const { r, s, v, yParity } = parseSignature(p.signature)
-  return [p.from, p.to, p.value, p.validAfter, p.validBefore, p.nonce, Number(v ?? 27n + BigInt(yParity)), r, s]
+function splitSig(signature) {
+  const { r, s, v, yParity } = parseSignature(signature)
+  return [Number(v ?? 27n + BigInt(yParity)), r, s]
+}
+
+// The contract call that settles a payment: USDC/EURC itself, or the vault for vouchers.
+function settleCall(p) {
+  if (p.vault) {
+    return { address: vaultAddress(p.chainId), abi: VAULT_ABI, functionName: 'redeem',
+      args: [tokenAddress(p.chainId, p.token), p.from, p.to, p.value, p.validBefore, p.nonce, ...splitSig(p.signature)] }
+  }
+  return { address: tokenAddress(p.chainId, p.token), abi: USDC_ABI, functionName: 'transferWithAuthorization',
+    args: [p.from, p.to, p.value, p.validAfter, p.validBefore, p.nonce, ...splitSig(p.signature)] }
 }
 
 // Online status of a payment: already settled on Arc? payer still funded?
 export async function checkPayment(p, { rpcUrl } = {}) {
   const client = publicClient(p.chainId, rpcUrl)
-  const [used, balance] = await Promise.all([
-    client.readContract({ address: tokenAddress(p.chainId, p.token), abi: USDC_ABI, functionName: 'authorizationState', args: [p.from, p.nonce] }),
-    client.readContract({ address: tokenAddress(p.chainId, p.token), abi: USDC_ABI, functionName: 'balanceOf', args: [p.from] }),
-  ])
+  const token = tokenAddress(p.chainId, p.token)
+  const [used, balance] = await Promise.all(p.vault
+    ? [
+      client.readContract({ address: vaultAddress(p.chainId), abi: VAULT_ABI, functionName: 'voucherUsed', args: [p.from, p.nonce] }),
+      client.readContract({ address: vaultAddress(p.chainId), abi: VAULT_ABI, functionName: 'balanceOf', args: [token, p.from] }),
+    ]
+    : [
+      client.readContract({ address: token, abi: USDC_ABI, functionName: 'authorizationState', args: [p.from, p.nonce] }),
+      client.readContract({ address: token, abi: USDC_ABI, functionName: 'balanceOf', args: [p.from] }),
+    ])
   return { settled: used, payerBalance: balance, funded: balance >= p.value }
 }
 
 // Dry run against the real USDC contract, no gas spent.
 export async function simulatePayment(p, { rpcUrl, relayer } = {}) {
   const client = publicClient(p.chainId, rpcUrl)
-  await client.simulateContract({ address: tokenAddress(p.chainId, p.token), abi: USDC_ABI, functionName: 'transferWithAuthorization', args: txArgs(p), account: relayer ?? p.to })
+  await client.simulateContract({ ...settleCall(p), account: relayer ?? p.to })
 }
 
 // Submits the payment. `relayerAccount` pays the gas (a fraction of a cent of USDC on Arc);
@@ -212,9 +294,35 @@ export async function settlePayment(p, { relayerAccount, rpcUrl }) {
   const chain = CHAINS[p.chainId]
   const wallet = createWalletClient({ account: relayerAccount, chain, transport: http(rpcUrl) })
   const client = publicClient(p.chainId, rpcUrl)
-  const hash = await wallet.writeContract({ address: tokenAddress(p.chainId, p.token), abi: USDC_ABI, functionName: 'transferWithAuthorization', args: txArgs(p) })
+  const hash = await wallet.writeContract(settleCall(p))
   const receipt = await client.waitForTransactionReceipt({ hash, pollingInterval: 150 })
   return { hash, status: receipt.status, blockNumber: receipt.blockNumber, url: `${chain.blockExplorers.default.url}/tx/${hash}` }
+}
+
+// ---------- vault deposits ----------
+// The owner signs an EIP-3009 ReceiveWithAuthorization to the vault; anyone online submits it.
+const RECEIVE_TYPES = { ReceiveWithAuthorization: TYPES.TransferWithAuthorization }
+
+export async function createDeposit({ account, amount, chainId, token = 0, now = Math.floor(Date.now() / 1000) }) {
+  const message = {
+    from: account.address, to: vaultAddress(chainId), value: typeof amount === 'bigint' ? amount : parseUsdc(amount),
+    validAfter: 0n, validBefore: BigInt(now + 3600), nonce: randomNonce(),
+  }
+  const signature = await account.signTypedData({ domain: domain(chainId, token), types: RECEIVE_TYPES, primaryType: 'ReceiveWithAuthorization', message })
+  return { chainId, token, ...message, signature }
+}
+
+export const depositCall = (d) => ({
+  address: vaultAddress(d.chainId), abi: VAULT_ABI, functionName: 'depositWithAuthorization',
+  args: [tokenAddress(d.chainId, d.token), d.from, BigInt(d.value), BigInt(d.validAfter), BigInt(d.validBefore), d.nonce, ...splitSig(d.signature)],
+})
+
+export async function vaultState(chainId, token, owner) {
+  const client = publicClient(chainId)
+  const t = tokenAddress(chainId, token)
+  const read = (functionName) => client.readContract({ address: vaultAddress(chainId), abi: VAULT_ABI, functionName, args: [t, owner] })
+  const [balance, withdrawing, unlocksAt] = await Promise.all([read('balanceOf'), read('withdrawAmount'), read('withdrawUnlocksAt')])
+  return { balance, withdrawing, unlocksAt: Number(unlocksAt) }
 }
 
 // When the payer signed it (validBefore is always signing time + PAYMENT_TTL).

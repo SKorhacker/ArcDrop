@@ -1,11 +1,12 @@
 import QRCode from 'qrcode'
 import jsQR from 'jsqr'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
-import { isAddress, getAddress } from 'viem'
+import { isAddress, getAddress, createWalletClient, http } from 'viem'
 import {
   createPayment, encodePayment, decodePayment, verifyPayment, paymentLink, extractPacket,
   checkPayment, settlePayment, publicClient, formatUsdc, parseUsdc, CHAINS, USDC_ABI,
   tokenAddress, symbol, signedAt, createAck, readAck, encodeRequest, decodeRequest,
+  vaultAddress, vaultState, createDeposit, VAULT_ABI,
 } from '../core/arcdrop.js'
 
 const $ = (id) => document.getElementById(id)
@@ -96,10 +97,10 @@ function renderWallet() {
 }
 
 // ---------- balances & offline spending cap ----------
-const balanceKey = (t) => `${chainId}:${t}`
+const balanceKey = (t, vault = false) => `${chainId}:${t}${vault ? ':vault' : ''}`
 
-function lastBalance(t) {
-  const b = store.get('balances', {})[balanceKey(t)]
+function lastBalance(t, vault = false) {
+  const b = store.get('balances', {})[balanceKey(t, vault)]
   return b ? BigInt(b) : null
 }
 
@@ -111,6 +112,11 @@ async function refreshBalance() {
     try {
       const b = await client.readContract({ address: tokenAddress(chainId, t), abi: USDC_ABI, functionName: 'balanceOf', args: [account.address] })
       balances[balanceKey(t)] = b.toString()
+      if (vaultAddress(chainId)) {
+        const v = await vaultState(chainId, t, account.address)
+        balances[balanceKey(t, true)] = v.balance.toString()
+        balances[`${balanceKey(t, true)}:withdraw`] = { value: v.withdrawing.toString(), at: v.unlocksAt }
+      }
     } catch { /* offline or RPC hiccup; keep last value */ }
   }
   store.set('balances', balances)
@@ -122,24 +128,84 @@ function renderBalances() {
   $('balance').textContent = main == null ? '—' : money(main, token)
   $('balance2').hidden = !other
   $('balance2').textContent = other ? `et ${money(other, 1 - token)}` : ''
+  renderVault()
   renderAvail()
 }
 
 // Never promise more than the last balance seen on Arc, minus payments still pending.
-// null = this wallet's balance was never seen online.
-function availableOffline(t = token) {
-  const last = lastBalance(t)
+// Two pools: the wallet itself, and the vault (guaranteed payments). null = never seen online.
+function availableOffline(t = token, vault = false) {
+  const last = lastBalance(t, vault)
   if (last == null) return null
   const promised = store.get('sent', []).filter((s) => s.status === 'pending')
-    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId && (q.token ?? 0) === t)
+    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId && (q.token ?? 0) === t && !!q.vault === vault)
     .reduce((sum, q) => sum + q.value, 0n)
   const left = last - promised
   return left > 0n ? left : 0n
 }
 
 function renderAvail() {
-  const a = availableOffline()
-  $('avail').textContent = a == null ? '' : `Disponible : ${money(a, token)}`
+  const a = availableOffline(), v = availableOffline(token, true)
+  $('avail').textContent = a == null ? '' : `Disponible : ${money(a, token)}${v ? ` · 🔒 ${money(v, token)} garantis` : ''}`
+}
+
+// ---------- offline vault ----------
+function renderVault() {
+  const has = !!vaultAddress(chainId)
+  for (const id of ['vaultAdd', 'vaultOut']) $(id).hidden = !has
+  if (!has) { $('vaultBal').textContent = 'pas sur ce réseau'; return }
+  const v = lastBalance(token, true)
+  $('vaultBal').textContent = v == null ? '—' : money(v, token)
+  const w = store.get('balances', {})[`${balanceKey(token, true)}:withdraw`]
+  const pending = w && BigInt(w.value) > 0n
+  const ready = pending && w.at * 1000 <= Date.now()
+  $('vaultOutLabel').textContent = ready ? `Récupérer ${money(BigInt(w.value), token)}` : 'Retirer…'
+  $('vaultInfo').textContent = pending && !ready
+    ? `Retrait de ${money(BigInt(w.value), token)} disponible le ${new Date(w.at * 1000).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}. D'ici là, tes paiements hors ligne restent garantis.`
+    : "Tes paiements hors ligne puisent d'abord dans le coffre. Ils sont garantis : un retrait demande 24 h de préavis, le temps que tout soit réglé."
+}
+
+function askAmount(question) {
+  const raw = prompt(question)
+  if (!raw) return null
+  try { const v = parseUsdc(raw.replace(',', '.').trim()); return v >= 10_000n ? v : null } catch { return null }
+}
+
+$('vaultAdd').onclick = async () => {
+  if (!online) return toast('Il faut du réseau pour remplir le coffre')
+  const value = askAmount(`Combien de ${symbol(token)} mettre de côté pour payer hors ligne ?`)
+  if (value == null) return
+  if (value > (lastBalance(token) ?? 0n)) return toast('Solde insuffisant')
+  try {
+    const d = await createDeposit({ account, amount: value, chainId, token })
+    const r = await fetch(`${gateway()}/api/deposit`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deposit: d }, (_, v) => (typeof v === 'bigint' ? v.toString() : v)) })
+    const out = await r.json()
+    if (!out.ok) throw new Error(out.error ?? 'refusé')
+    toast(`🔒 ${money(value, token)} dans le coffre`); haptic('success')
+    refreshBalance()
+  } catch (e) { toast(`Dépôt impossible : ${e.message}`.slice(0, 90)) }
+}
+
+$('vaultOut').onclick = async () => {
+  if (!online) return toast('Il faut du réseau pour retirer')
+  const w = store.get('balances', {})[`${balanceKey(token, true)}:withdraw`]
+  const ready = w && BigInt(w.value) > 0n && w.at * 1000 <= Date.now()
+  const wallet = createWalletClient({ account, chain: CHAINS[chainId], transport: http() })
+  try {
+    if (ready) {
+      const hash = await wallet.writeContract({ address: vaultAddress(chainId), abi: VAULT_ABI, functionName: 'withdraw', args: [tokenAddress(chainId, token)] })
+      await publicClient(chainId).waitForTransactionReceipt({ hash })
+      toast('Retrait effectué')
+    } else {
+      const value = askAmount(`Combien de ${symbol(token)} retirer du coffre ? (disponible dans 24 h)`)
+      if (value == null) return
+      const hash = await wallet.writeContract({ address: vaultAddress(chainId), abi: VAULT_ABI, functionName: 'requestWithdraw', args: [tokenAddress(chainId, token), value] })
+      await publicClient(chainId).waitForTransactionReceipt({ hash })
+      toast('Retrait demandé : disponible dans 24 h')
+    }
+    refreshBalance()
+  } catch (e) { toast(`Impossible : ${e.shortMessage ?? e.message}`.slice(0, 90)) }
 }
 
 function setToken(t) {
@@ -292,11 +358,15 @@ $('signBtn').onclick = async () => {
   try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Montant invalide') }
   if (value < 10_000n) { shake(); return toast(`Minimum 0,01 ${symbol(token)}`) }
   if (getAddress(to) === account.address) return toast("C'est ta propre adresse")
+  // Guaranteed payment from the vault when it covers the amount, otherwise a plain one.
+  const fromVault = !!vaultAddress(chainId) && (availableOffline(token, true) ?? 0n) >= value
   const available = availableOffline()
-  if (available == null) return toast("Ouvre l'app une fois en ligne pour connaître ton solde")
-  if (value > available) { shake(); return toast(`Disponible : ${money(available, token)}`) }
+  if (!fromVault) {
+    if (available == null) return toast("Ouvre l'app une fois en ligne pour connaître ton solde")
+    if (value > available) { shake(); return toast(`Disponible : ${money(available, token)}`) }
+  }
 
-  const p = await createPayment({ account, to, amount: value, chainId, token })
+  const p = await createPayment({ account, to, amount: value, chainId, token, vault: fromVault })
   const packet = encodePayment(p)
   // In the app, AirDrop an arcdrop:// link so the receiver's app opens it directly.
   lastPayment = { p, packet, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${location.protocol === 'file:' ? '/' : location.pathname}`) }
@@ -309,6 +379,7 @@ $('signBtn').onclick = async () => {
   if (mesh && near) mesh.postMessage({ type: 'broadcast', packet })
 
   $('outAmount').textContent = money(p.value, p.token)
+  $('outPill').textContent = p.vault ? 'Signé · 🔒 garanti' : 'Signé · en attente'
   $('outTo').textContent = `à ${nameOf(p.to)}`
   $('transportHint').textContent = near
     ? `Envoyé en Bluetooth à ${nameOf(p.to)}. Tu peux aussi montrer le QR ou utiliser AirDrop.`
@@ -614,7 +685,7 @@ function journey(item, p) {
   }
   if (item.ms) settled += ` · en ${(item.ms / 1000).toFixed(2).replace('.', ',')} s`
   return `<ol>
-    <li class="done">Signé hors ligne à ${time(signed)}</li>
+    <li class="done">Signé hors ligne à ${time(signed)}${p.vault ? ' · tiré du coffre (garanti)' : ''}</li>
     <li class="done">${carried} · signature vérifiée</li>
     <li class="${s === 'settled' ? 'done' : s === 'failed' ? 'fail' : ''}">${settled}${item.tx ? ` · <a href="${item.tx}" target="_blank" rel="noopener">voir la tx</a>` : ''}</li>
   </ol>${item.note ? `<div class="note">${esc(item.note)}</div>` : ''}`
@@ -637,7 +708,7 @@ function renderInbox() {
     return txCell({
       icon: mine ? ICON_IN : ICON_RELAY, kind: mine ? 'in' : 'relay',
       title: mine ? `De ${nameOf(p.from)}` : 'Relayé',
-      sub: mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`,
+      sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`) + (p.vault ? ' · 🔒 garanti' : ''),
       amount: `${mine ? '+' : ''}${money(p.value, p.token)}`, amountClass: mine ? 'in' : '',
       status: item.status, details: journey(item, p),
     })

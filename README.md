@@ -51,6 +51,10 @@ mesh/build/arcmesh-node https://arcdrop-pink.vercel.app
 cd ios-app && xcodegen generate && open ArcDrop.xcodeproj   # set your team, run on device
 ```
 
+## Offline vault (guaranteed payments)
+
+`contracts/ArcDropVault.sol` (deployed on Arc testnet, address in `core/vault.json`): funds are locked in advance with an EIP-3009 `receiveWithAuthorization`; offline payments become EIP-712 vouchers (`arcdrop:3:…`) redeemed by anyone; withdrawals need 24 h notice so vouchers in flight always settle. `scripts/vault-e2e.mjs` runs the whole thing live on testnet.
+
 ## Run it
 
 ```bash

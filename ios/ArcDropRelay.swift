@@ -17,9 +17,11 @@
 import Foundation
 
 enum ArcDropPacket {
-    // v1 = USDC (157 bytes); v2 = token u8 + v1 layout (158 bytes), token 1 = EURC.
+    // v1 = USDC (157 bytes); v2 = token u8 + v1 layout (158 bytes), token 1 = EURC;
+    // v3 = vault voucher (154 bytes): token u8 | chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65.
     static let prefix = "arcdrop:1:"
     static let prefixV2 = "arcdrop:2:"
+    static let prefixV3 = "arcdrop:3:"
     static let byteLength = 157
 
     struct Info: Equatable {
@@ -32,6 +34,7 @@ enum ArcDropPacket {
         let validBefore: UInt32
         let nonce: String
         var token: UInt8 = 0
+        var vault = false
 
         var symbol: String { token == 1 ? "EURC" : "USDC" }
 
@@ -45,7 +48,7 @@ enum ArcDropPacket {
 
     /// Finds the first packet in arbitrary text (a bitchat message, a link…).
     static func extract(from text: String) -> String? {
-        guard text.count < 4_000, let start = text.range(of: prefixV2) ?? text.range(of: prefix) else { return nil }
+        guard text.count < 4_000, let start = text.range(of: prefixV3) ?? text.range(of: prefixV2) ?? text.range(of: prefix) else { return nil }
         let head = String(text[start])
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         var body = ""
@@ -59,21 +62,25 @@ enum ArcDropPacket {
 
     static func decode(_ text: String) -> Info? {
         guard let packet = extract(from: text) else { return nil }
-        let v2 = packet.hasPrefix(prefixV2)
+        let v2 = packet.hasPrefix(prefixV2), v3 = packet.hasPrefix(prefixV3)
         var b64 = String(packet.dropFirst(prefix.count))
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64.append("=") }
-        guard let data = Data(base64Encoded: b64), data.count == byteLength + (v2 ? 1 : 0) else { return nil }
-        let token: UInt8 = v2 ? data[data.startIndex] : 0
+        guard let data = Data(base64Encoded: b64), data.count == (v3 ? 154 : byteLength + (v2 ? 1 : 0)) else { return nil }
+        let token: UInt8 = v2 || v3 ? data[data.startIndex] : 0
         guard token <= 1 else { return nil }
-        let bytes = [UInt8](v2 ? data.dropFirst() : data)
+        let bytes = [UInt8](v2 || v3 ? data.dropFirst() : data)
 
         func uint(_ offset: Int, _ size: Int) -> UInt64 {
             bytes[offset..<offset + size].reduce(0) { $0 << 8 | UInt64($1) }
         }
         func hex(_ offset: Int, _ size: Int) -> String {
             "0x" + bytes[offset..<offset + size].map { String(format: "%02x", $0) }.joined()
+        }
+        if v3 { // chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65
+            return Info(packet: packet, chainId: UInt32(uint(0, 4)), from: hex(4, 20), to: hex(24, 20),
+                        value: uint(44, 8), validBefore: UInt32(uint(52, 4)), nonce: hex(56, 32), token: token, vault: true)
         }
         // chainId u32 | from 20 | to 20 | value u64 | validAfter u32 | validBefore u32 | nonce 32 | sig 65
         return Info(

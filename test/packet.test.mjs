@@ -89,3 +89,19 @@ console.log('status check ok', status)
   assert.equal(decodeRequest('nothing here'), null)
   console.log('receipts + payment requests ok')
 }
+
+// ---------- vault vouchers (v3 packets) ----------
+{
+  const { createPayment, encodePayment, decodePayment, verifyPayment } = await import('../core/arcdrop.js')
+  const v = await createPayment({ account: payer, to: payee.address, amount: '0.7', chainId: 5042002, vault: true })
+  const text = encodePayment(v)
+  assert.ok(text.startsWith('arcdrop:3:'))
+  const back = decodePayment(`relay: ${text}`)
+  assert.equal(back.vault, true)
+  assert.equal(back.value, 700_000n)
+  assert.deepEqual(await verifyPayment(back), { ok: true })
+  assert.equal((await verifyPayment({ ...back, to: payer.address })).reason, 'bad signature')
+  // a voucher cannot be replayed as a plain EIP-3009 payment
+  assert.equal((await verifyPayment({ ...back, vault: false })).reason, 'bad signature')
+  console.log('vault voucher: encode/decode/verify ok (live redeem: scripts/vault-e2e.mjs)')
+}
