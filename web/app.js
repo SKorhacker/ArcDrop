@@ -4,7 +4,7 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { isAddress, getAddress, createWalletClient, http } from 'viem'
 import {
   createPayment, encodePayment, decodePayment, verifyPayment, paymentLink, extractPacket,
-  checkPayment, settlePayment, publicClient, formatUsdc, parseUsdc, CHAINS, USDC_ABI,
+  checkPayment, settlePayment, simulatePayment, publicClient, formatUsdc, parseUsdc, CHAINS, USDC_ABI,
   tokenAddress, symbol, createAck, ackNonce, verifyAck, encodeRequest, decodeRequest,
   tabsAddress, tabState, tabsTo, createTabFunding, createTabPayment, TABS_ABI, confirmSettlement,
 } from '../core/arcdrop.js'
@@ -14,6 +14,18 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('arcdrop.' + k); return v == null ? d : JSON.parse(v) } catch { return d } },
   set(k, v) { try { localStorage.setItem('arcdrop.' + k, JSON.stringify(v)); return true } catch { return false } },
 }
+// Payments, tabs, balances and contacts belong to one wallet: importing another key must
+// never reuse them (spending cap, tab running totals, …). `acct` scopes them by address.
+const SHAPES = { sent: [], inbox: [], tabs: {}, tabsIn: {}, tabRx: {}, balances: {}, contacts: {} }
+const acct = {
+  get(k, d) {
+    const v = store.get(`${account.address}:${k}`, d)
+    const want = SHAPES[k] ?? d
+    // Corrupted storage must not take the app down.
+    return Array.isArray(want) ? (Array.isArray(v) ? v : d) : (v && typeof v === 'object' && !Array.isArray(v) ? v : d)
+  },
+  set(k, v) { return store.set(`${account.address}:${k}`, v) },
+}
 
 // Inside the iOS app, the native side injects this handler (Bluetooth mesh, share sheet, Keychain).
 const mesh = globalThis.webkit?.messageHandlers?.arcmesh
@@ -21,16 +33,32 @@ const mesh = globalThis.webkit?.messageHandlers?.arcmesh
 // ---------- wallet & settings ----------
 // In the iOS app the key also lives in the Keychain (injected before this script runs),
 // so it survives even if the web view's storage is cleared.
+// The Keychain copy wins. A web-storage copy is kept until the native side confirms it has
+// saved the key, and the native side never overwrites an existing key unless asked to import.
 let key = globalThis.ARCDROP_NATIVE_KEY || store.get('key')
 if (!key) key = generatePrivateKey()
-if (mesh) { mesh.postMessage({ type: 'saveKey', key }); try { localStorage.removeItem('arcdrop.key') } catch {} } else store.set('key', key)
+store.set('key', key)
+if (mesh && !globalThis.ARCDROP_NATIVE_KEY) mesh.postMessage({ type: 'saveKey', key, replace: false })
+globalThis.arcdropKeySaved = (ok) => { if (ok) try { localStorage.removeItem('arcdrop.key') } catch {} }
+if (mesh && globalThis.ARCDROP_NATIVE_KEY) try { localStorage.removeItem('arcdrop.key') } catch {}
 let account = privateKeyToAccount(key)
+// One-time migration: data saved before it was scoped per wallet belongs to this wallet.
+for (const k of Object.keys(SHAPES)) {
+  try {
+    const old = localStorage.getItem('arcdrop.' + k)
+    if (old != null && localStorage.getItem(`arcdrop.${account.address}:${k}`) == null) localStorage.setItem(`arcdrop.${account.address}:${k}`, old)
+    if (old != null) localStorage.removeItem('arcdrop.' + k)
+  } catch { /* storage unavailable */ }
+}
 
 // Default network is set at build time (ARCDROP_CHAIN=mainnet|testnet); `?net=` overrides it.
 const NETS = { mainnet: 5042, testnet: 5042002 }
-const urlNet = NETS[new URLSearchParams(location.search).get('net')]
-if (urlNet) store.set('chain', urlNet)
-let chainId = urlNet ?? store.get('chain', NETS[ARCDROP_CHAIN] ?? 5042002)
+const netParam = new URLSearchParams(location.search).get('net')
+// `?net=` only applies to this visit (never saved), so a crafted link can't switch the network
+// you receive on. Anything unexpected falls back to the build default.
+const urlNet = Object.hasOwn(NETS, netParam ?? '') ? NETS[netParam] : null
+const savedNet = store.get('chain', null)
+let chainId = urlNet ?? (Object.values(NETS).includes(savedNet) ? savedNet : (NETS[ARCDROP_CHAIN] ?? 5042002))
 let token = store.get('token', 0) // 0 = USDC, 1 = EURC
 
 // Inside the iOS app the page is a local file: talk to (and link to) the public deployment.
@@ -43,7 +71,7 @@ const tryDecode = (packet) => { try { return decodePayment(packet) } catch { ret
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
 // Cents, rounded down so we never overstate; French decimal comma.
 const fmt = (v) => formatUsdc(v - (v % 10_000n)).replace('.', ',')
-const money = (v, t) => `${fmt(v)} ${symbol(t)}`
+const money = (v, t, c = chainId) => `${fmt(v)} ${symbol(t)}${c === 5042 ? '' : ' (test)'}`
 const time = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
 const MIN_VALUE = 10_000n // 0.01
 // A payment's identity, independent of how it was encoded or carried.
@@ -54,14 +82,19 @@ const amountOf = (item, p) => (item?.amount != null ? BigInt(item.amount) : p.va
 const txUrl = (hash, c = chainId) => (/^0x[0-9a-fA-F]{64}$/.test(hash ?? '') ? `${CHAINS[c].blockExplorers.default.url}/tx/${hash}` : null)
 const hashOf = (url) => (String(url ?? '').match(/0x[0-9a-fA-F]{64}$/) ?? [])[0]
 // Bluetooth names are attacker-controlled: no control, zero-width or bidi characters.
-const cleanName = (n) => String(n ?? '').replace(/[\p{Cc}\p{Cf}]/gu, '').trim().slice(0, 24)
+const cleanName = (n) => [...String(n ?? '').normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034F\u115F\u1160\u3164\uFFA0]/gu, '').trim()].slice(0, 24).join('')
+// For impostor checks: case, accents and look-alike letters folded.
+const CONFUSABLE = { а: 'a', е: 'e', о: 'o', р: 'p', с: 'c', х: 'x', у: 'y', і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ӏ: 'l', '0': 'o', '1': 'l' }
+const fold = (n) => cleanName(n).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/./gu, (c) => CONFUSABLE[c] ?? c)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 
 // Contacts = people you actually paid (name as seen when you paid them). Names merely
 // heard over Bluetooth are kept in memory only and shown with the address next to them.
-const contacts = store.get('contacts', {})
+let contacts = acct.get('contacts', {})
 const heard = new Map()
-const nameOf = (addr) => contacts[getAddress(addr)] || heard.get(getAddress(addr)) || short(addr)
+// In money contexts only names you confirmed (people you paid) are shown; strangers stay an address.
+const nameOf = (addr) => contacts[getAddress(addr)] || short(addr)
+const nearbyName = (addr) => contacts[getAddress(addr)] || heard.get(getAddress(addr)) || short(addr)
 const myName = () => store.get('name', '')
 
 function toast(msg) {
@@ -91,14 +124,21 @@ async function copy(text) {
   }
 }
 
+// Presence over Bluetooth reveals your address and name to anyone nearby: only while the
+// Pay screen is open (that's when "Nearby" is useful), never in the background.
+let currentTab = 'pay'
 function announce() {
-  mesh?.postMessage({ type: 'profile', address: account.address, name: myName() })
+  if (!mesh) return
+  if (currentTab === 'pay' && document.visibilityState === 'visible') mesh.postMessage({ type: 'profile', address: account.address, name: myName() })
+  else mesh.postMessage({ type: 'presence', on: false })
 }
+document.addEventListener('visibilitychange', () => announce())
 
 function renderWallet() {
   $('myAddr').textContent = account.address
   $('myAddr2').textContent = account.address
-  $('chainLabel').textContent = chainId === 5042 ? 'Arc' : 'Arc testnet'
+  $('chainLabel').textContent = chainId === 5042 ? '' : 'TESTNET'
+  $('chainLabel').hidden = chainId === 5042
   $('chainSel').value = String(chainId)
   $('gateway').value = store.get('gateway', '')
   $('myName').value = myName()
@@ -111,21 +151,22 @@ function renderWallet() {
 const balanceKey = (t) => `${chainId}:${t}`
 
 function lastBalance(t) {
-  const b = store.get('balances', {})[balanceKey(t)]
+  const b = acct.get('balances', {})[balanceKey(t)]
   return b ? BigInt(b) : null
 }
 
 async function refreshBalance() {
   if (!online) return
-  const client = publicClient(chainId)
-  const balances = store.get('balances', {})
+  const c = chainId, who = account.address // the user may switch network/wallet while we wait
+  const client = publicClient(c)
+  const fresh = {}
   for (const t of [0, 1]) {
     try {
-      const b = await client.readContract({ address: tokenAddress(chainId, t), abi: USDC_ABI, functionName: 'balanceOf', args: [account.address] })
-      balances[balanceKey(t)] = b.toString()
+      fresh[`${c}:${t}`] = (await client.readContract({ address: tokenAddress(c, t), abi: USDC_ABI, functionName: 'balanceOf', args: [who] })).toString()
     } catch { /* offline or RPC hiccup; keep last value */ }
   }
-  store.set('balances', balances)
+  if (who !== account.address) return
+  acct.set('balances', { ...acct.get('balances', {}), ...fresh })
   renderBalances()
   refreshTabs()
 }
@@ -145,7 +186,7 @@ function availableOffline(t = token) {
   const last = lastBalance(t)
   if (last == null) return null
   const now = BigInt(Math.floor(Date.now() / 1000))
-  const promised = store.get('sent', []).filter((s) => s.status === 'pending')
+  const promised = acct.get('sent', []).filter((s) => s.status === 'pending')
     .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId && (q.token ?? 0) === t && !q.tab && q.validBefore > now)
     .reduce((sum, q) => sum + q.value, 0n)
   const left = last - promised
@@ -162,25 +203,29 @@ function renderAvail() {
 // ---------- tabs ("ardoises"): guaranteed offline payments to one person ----------
 // Payer side: tabs I opened, with the running total I have signed so far (never decreases).
 // Receiver side: tabs opened for me, seen while online, so offline payments can be shown as guaranteed.
-const tabKey = (t, who) => `${chainId}:${t}:${getAddress(who)}`
-const myTabs = () => store.get('tabs', {})
-const tabsForMe = () => store.get('tabsIn', {})
-const MARGIN = 3600 // a tab must stay open at least this long to be used / trusted
+const tabKey = (t, who, c = chainId) => `${c}:${t}:${getAddress(who)}`
+const myTabs = () => acct.get('tabs', {})
+const tabsForMe = () => acct.get('tabsIn', {})
+// A tab is only used (payer) or trusted (receiver) if it stays open at least this long, so a
+// receiver who stays offline for a day still has time to cash in before it can be closed.
+const MARGIN = 24 * 3600
 
 function usableTab(to, t = token) {
   const tab = myTabs()[tabKey(t, to)]
-  if (!tab || tab.expiry <= Date.now() / 1000 + MARGIN) return null
+  if (!tab || tab.chainId !== chainId || tab.expiry <= Date.now() / 1000 + MARGIN) return null
   const left = BigInt(tab.locked) - BigInt(tab.cumulative)
   return left > 0n ? { ...tab, left } : null
 }
 
 async function refreshTabs() {
   if (!online || !tabsAddress(chainId)) return renderTabs()
+  const c = chainId, who = account.address
   try {
     const states = {}
     for (const [k, tab] of Object.entries(myTabs())) {
-      if (k.startsWith(`${chainId}:`)) states[k] = await tabState(chainId, tab.token, account.address, tab.to)
+      if (k.startsWith(`${c}:`)) states[k] = await tabState(c, tab.token, who, tab.to)
     }
+    if (who !== account.address) return
     // Merge into the CURRENT list: a payment may have been signed during the calls above,
     // and its running total must never go backwards.
     const mine = myTabs()
@@ -192,16 +237,19 @@ async function refreshTabs() {
       const cumulative = st.epoch === tab.epoch ? (BigInt(tab.cumulative) > st.paid ? BigInt(tab.cumulative) : st.paid) : st.paid
       mine[k] = { ...tab, locked: st.locked.toString(), paid: st.paid.toString(), expiry: st.expiry, epoch: st.epoch, cumulative: cumulative.toString() }
     }
-    store.set('tabs', mine)
+    acct.set('tabs', mine)
     const incoming = {}
     for (const t of [0, 1]) {
-      for (const tab of await tabsTo(chainId, t, account.address)) {
-        if (tab.locked > tab.paid && tab.expiry > Date.now() / 1000) {
-          incoming[tabKey(t, tab.from)] = { from: tab.from, token: t, locked: tab.locked.toString(), paid: tab.paid.toString(), expiry: tab.expiry, epoch: tab.epoch }
+      for (const tab of await tabsTo(c, t, who, { limit: 500 })) {
+        if (tab.expiry > Date.now() / 1000) {
+          incoming[tabKey(t, tab.from, c)] = { chainId: c, from: tab.from, token: t, locked: tab.locked.toString(), paid: tab.paid.toString(), expiry: tab.expiry, epoch: tab.epoch }
         }
       }
     }
-    store.set('tabsIn', incoming)
+    if (who !== account.address) return
+    // keep other networks' entries, replace this network's
+    const keep = Object.fromEntries(Object.entries(acct.get('tabsIn', {})).filter(([k]) => !k.startsWith(`${c}:`)))
+    acct.set('tabsIn', { ...keep, ...incoming })
   } catch { /* keep the last known state */ }
   renderTabs()
 }
@@ -223,6 +271,7 @@ function renderTabs() {
       <span class="tx-end"><div class="tx-amt">${money(left > 0n ? left : 0n, tab.token)}</div><div class="tx-state">sur ${money(BigInt(tab.locked), tab.token)}</div></span></button>`)
   }
   for (const tab of Object.values(tabsForMe())) {
+    if (tab.chainId !== chainId || tab.expiry <= now || BigInt(tab.locked) <= BigInt(tab.paid)) continue
     rows.push(`<div class="cell tx"><span class="tx-ic in">🔒</span><span class="cell-main"><div>De ${esc(nameOf(tab.from))}</div>
       <div class="cell-sub">garantie pour toi jusqu’au ${day(tab.expiry)}</div></span>
       <span class="tx-end"><div class="tx-amt in">${money(BigInt(tab.locked) - BigInt(tab.paid), tab.token)}</div><div class="tx-state">bloqués</div></span></div>`)
@@ -245,21 +294,26 @@ $('tabOpen').onclick = async () => {
   if (to === account.address) return toast("Pas d'ardoise avec toi-même")
   const value = askAmount(`Combien de ${symbol(token)} bloquer pour ${nameOf(to)} pendant 7 jours ? (min 0,1)`)
   if (value == null) return toast('Montant invalide (minimum 0,1)')
-  if (value > (lastBalance(token) ?? 0n)) return toast('Solde insuffisant')
+  if (value > (availableOffline() ?? 0n)) return toast('Solde insuffisant (paiements en attente compris)')
+  const c = chainId, t = token
+  let before
+  try { before = await tabState(c, t, account.address, to) } catch { return toast('Arc injoignable, réessaie') }
   try {
-    const f = await createTabFunding({ account, to, amount: value, days: 7, chainId, token })
+    const f = await createTabFunding({ account, to, amount: value, days: 7, chainId: c, token: t })
     const r = await fetch(`${gateway()}/api/fund`, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tab: f }, (_, v) => (typeof v === 'bigint' ? v.toString() : v)) })
-    const out = await r.json()
-    if (!out.ok) throw new Error(out.error ?? 'refusé')
-    const st = await tabState(chainId, token, account.address, to)
+    let out = {}
+    try { out = await r.json() } catch { /* ambiguous: check the chain below */ }
+    // Whatever the gateway said, the chain decides: did our lock land?
+    const st = await tabState(c, t, account.address, to)
+    if (!(st.locked > before.locked || (st.epoch === before.epoch && st.expiry > before.expiry))) throw new Error(out.error ?? 'refusé')
     const mine = myTabs()
-    const prev = mine[tabKey(token, to)]
-    mine[tabKey(token, to)] = { chainId, token, to, epoch: st.epoch, locked: st.locked.toString(), paid: st.paid.toString(), expiry: st.expiry,
+    const prev = mine[tabKey(t, to, c)]
+    mine[tabKey(t, to, c)] = { chainId: c, token: t, to, epoch: st.epoch, locked: st.locked.toString(), paid: st.paid.toString(), expiry: st.expiry,
       cumulative: (prev && prev.epoch === st.epoch && BigInt(prev.cumulative) > st.paid ? BigInt(prev.cumulative) : st.paid).toString() }
-    store.set('tabs', mine)
-    if (heard.get(to) && !contacts[to]) { contacts[to] = heard.get(to); store.set('contacts', contacts) }
-    toast(`🔒 Ardoise : ${money(value, token)} garantis pour ${nameOf(to)}`); haptic('success')
+    acct.set('tabs', mine)
+    if (heard.get(to) && !contacts[to]) { contacts[to] = heard.get(to); acct.set('contacts', contacts) }
+    toast(`🔒 Ardoise : ${money(value, t)} garantis pour ${nameOf(to)}`); haptic('success')
     refreshBalance()
   } catch (e) { toast(`Ardoise impossible : ${e.message}`.slice(0, 90)) }
 }
@@ -313,7 +367,8 @@ let nearby = []
 const distance = (rssi) => rssi == null ? 'à côté' : rssi > -60 ? 'tout près' : rssi > -75 ? 'proche' : 'plus loin'
 
 // A name already used by a contact with another address: someone may be impersonating them.
-const impostor = (p) => p.name && Object.entries(contacts).some(([a, n]) => n === p.name && a !== p.address)
+const impostor = (p) => !!p.name && (Object.entries(contacts).some(([a, n]) => fold(n) === fold(p.name) && a !== p.address)
+  || nearby.some((o) => o.address !== p.address && o.name && fold(o.name) === fold(p.name)))
 
 function renderNearby() {
   $('nearbyBox').hidden = !nearby.length
@@ -364,7 +419,7 @@ function renderWho() {
   if (known) {
     const a = getAddress(to)
     const n = nearby.find((x) => x.address === a)
-    parts.push(`À <b>${esc(nameOf(a))}</b> · …${a.slice(-4)}${contacts[a] ? ' · déjà payé' : n && impostor(n) ? ' · ⚠︎ nom déjà pris par un contact' : ''}${near ? ' · à proximité' : ''}`)
+    parts.push(`À <b>${esc(nearbyName(a))}</b> · …${a.slice(-4)}${contacts[a] ? ' · déjà payé' : n && impostor(n) ? ' · ⚠︎ nom déjà pris par un contact' : ''}${near ? ' · à proximité' : ''}`)
   }
   if (pendingRequest?.label) parts.push(`pour « ${esc(pendingRequest.label)} »`)
   $('payWho').hidden = !parts.length
@@ -408,10 +463,11 @@ function applyRequest(r) {
   pendingRequest = r
   setToken(r.token)
   $('payTo').value = r.to
+  if (r.value % 10_000n !== 0n) return toast('Demande invalide (montant non arrondi au centime)')
   $('payAmount').value = fmt(r.value).replace(/,00$/, '')
   fitAmount(); renderWho(); renderNearby()
   tab('pay')
-  toast(`Demande de ${nameOf(r.to)} : ${money(r.value, r.token)}`)
+  toast(`Demande de ${nameOf(r.to)} : ${money(r.value, r.token)} · vérifie le destinataire avant de signer`)
 }
 
 function openSheet(id) {
@@ -450,18 +506,18 @@ $('signBtn').onclick = async () => {
     const mine = myTabs()
     const cumulative = BigInt(tab.cumulative) + value
     mine[tabKey(token, to)] = { ...mine[tabKey(token, to)], cumulative: cumulative.toString() }
-    if (!store.set('tabs', mine)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
+    if (!acct.set('tabs', mine)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
     p = await createTabPayment({ account, to, cumulative, epoch: tab.epoch, chainId, token })
   } else {
     p = await createPayment({ account, to, amount: value, chainId, token })
   }
   const packet = encodePayment(p)
   // In the app, AirDrop an arcdrop:// link so the receiver's app opens it directly.
-  lastPayment = { p, packet, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${location.protocol === 'file:' ? '/' : location.pathname}`) }
-  const sent = store.get('sent', [])
+  lastPayment = { p, packet, amount: value, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${location.protocol === 'file:' ? '/' : location.pathname}`) }
+  const sent = acct.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label, amount: value.toString() })
-  if (!store.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
-  if (nearby.some((n) => n.address === p.to) && heard.get(p.to) && !contacts[p.to]) { contacts[p.to] = heard.get(p.to); store.set('contacts', contacts) }
+  if (!acct.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
+  if (nearby.some((n) => n.address === p.to) && heard.get(p.to) && !contacts[p.to]) { contacts[p.to] = heard.get(p.to); acct.set('contacts', contacts) }
 
   // Someone right next to us over Bluetooth: send it straight away.
   const near = nearby.some((n) => n.address === p.to)
@@ -486,7 +542,7 @@ $('tQr').onclick = () => toast('Ton pote scanne ce QR depuis « Recevoir »')
 // AirDrop: the iOS share sheet offers AirDrop and works without internet.
 $('tShare').onclick = async () => {
   if (!lastPayment) return
-  const data = { title: 'ArcDrop', text: `${money(lastPayment.p.value, lastPayment.p.token)} pour toi via ArcDrop`, url: lastPayment.link }
+  const data = { title: 'ArcDrop', text: `${money(lastPayment.amount, lastPayment.p.token)} pour toi via ArcDrop`, url: lastPayment.link }
   if (mesh) return mesh.postMessage({ type: 'share', ...data }) // native share sheet in the iOS app
   if (navigator.share) {
     try { await navigator.share(data) } catch (e) { if (e.name !== 'AbortError') toast('Partage impossible') }
@@ -525,26 +581,32 @@ async function importPacket(text, via, hops) {
     if (online) settleAll()
     return
   }
-  const inbox = store.get('inbox', [])
+  if (p.value < MIN_VALUE) return quiet || toast('Refusé : montant inférieur à 0,01')
+  const inbox = acct.get('inbox', [])
   if (inbox.some((i) => (i.id ?? payId(tryDecode(i.packet) ?? {})) === id)) return // same payment, any encoding
-  let amount = p.value, guaranteed = false
+  // Flood guard: unsettled payments from people you never paid are capped.
+  if (!contacts[p.from] && inbox.filter((i) => i.status === 'pending' && tryDecode(i.packet)?.from === p.from).length >= 5) return quiet || toast('Trop de paiements en attente de ce payeur')
+  let amount = p.value, guaranteed = false, prev = 0n, redeemBefore
+  const rx = acct.get('tabRx', {})
+  const rk = p.tab ? `${tabKey(p.token, p.from)}:${p.epoch}` : null
   if (p.tab) {
-    // A tab voucher states the running total: this payment is the increase over the best one held.
-    const rx = store.get('tabRx', {})
-    const rk = `${tabKey(p.token, p.from)}:${p.epoch}`
-    const prev = BigInt(rx[rk] ?? 0)
-    if (p.cumulative <= prev) return // an older voucher of the same tab: nothing new
-    amount = p.cumulative - prev
-    rx[rk] = p.cumulative.toString()
-    if (!store.set('tabRx', rx)) return toast('Stockage plein : paiement non enregistré')
+    // A tab voucher states the running total: this payment is the increase over what was
+    // already received (held locally) or already paid out on-chain (known when last online).
     const known = tabsForMe()[tabKey(p.token, p.from)]
+    const knownPaid = known && known.epoch === p.epoch ? BigInt(known.paid) : 0n
+    prev = BigInt(rx[rk] ?? 0) > knownPaid ? BigInt(rx[rk] ?? 0) : knownPaid
+    if (p.cumulative <= prev) return quiet || toast('Bon déjà couvert par un paiement précédent')
+    amount = p.cumulative - prev
     guaranteed = !!known && known.epoch === p.epoch && BigInt(known.locked) >= p.cumulative && known.expiry > Date.now() / 1000 + MARGIN
+    redeemBefore = known?.expiry
   }
-  inbox.unshift({ id, packet: raw, via, hops, at: Date.now(), status: 'pending', amount: amount.toString(), guaranteed })
-  if (!store.set('inbox', inbox)) toast('Stockage plein : garde ce paiement (capture du QR) !')
+  // Save the payment first, the running total second: a full storage must never lose the payment.
+  inbox.unshift({ id, packet: raw, via, hops, at: Date.now(), status: 'pending', amount: amount.toString(), prev: prev.toString(), guaranteed, redeemBefore })
+  if (!acct.set('inbox', inbox)) return toast('Stockage plein : paiement NON enregistré, garde le QR !')
+  if (p.tab) { rx[rk] = p.cumulative.toString(); acct.set('tabRx', rx) }
   toast(p.tab
-    ? `${money(amount, p.token)} de ${nameOf(p.from)} · ${guaranteed ? '🔒 garanti par son ardoise' : 'ardoise non vérifiée'}`
-    : `${money(amount, p.token)} de ${nameOf(p.from)} · signature vérifiée, pas encore réglé`)
+    ? `${money(amount, p.token)} de ${nameOf(p.from)} · ${guaranteed ? '🔒 garanti, à encaisser avant le ' + day(redeemBefore) : 'ardoise non vérifiée, pas encore payé'}`
+    : `${money(amount, p.token)} de ${nameOf(p.from)} · PAS ENCORE PAYÉ (réglé dès que le réseau revient)`)
   haptic('success')
   // Tell the payer, over Bluetooth and without internet, that it arrived (real payments only).
   if (mesh && p.value >= MIN_VALUE) mesh.postMessage({ type: 'broadcast', packet: await createAck(account, p) })
@@ -557,17 +619,21 @@ async function importPacket(text, via, hops) {
 globalThis.arcdropReceipt = async (text) => {
   let nonce
   try { ({ nonce } = ackNonce(text)) } catch { return }
-  const s = store.get('sent', []).find((x) => tryDecode(x.packet)?.nonce === nonce)
+  const s = acct.get('sent', []).find((x) => tryDecode(x.packet)?.nonce === nonce)
   const p = s && tryDecode(s.packet)
   if (!p || s.delivered || !(await verifyAck(text, p))) return
   updateEntry('sent', s.packet, { delivered: Date.now() }); renderSent()
-  toast(`✓ ${nameOf(p.to)} a reçu ${money(p.value, p.token)}`)
+  if (p.tab) { // the recipient holds this running total: never sign below it again
+    const mine = myTabs(), k = tabKey(p.token, p.to)
+    if (mine[k] && BigInt(mine[k].cumulative) < p.cumulative) { mine[k].cumulative = p.cumulative.toString(); acct.set('tabs', mine) }
+  }
+  toast(`✓ ${nameOf(p.to)} a reçu ton paiement de ${money(amountOf(s, p), p.token)} (pas encore réglé)`)
   haptic('success')
 }
 
 // The native side passes (packet, hops) for Bluetooth deliveries.
 globalThis.arcdropReceive = (text, hops) => importPacket(text, 'Bluetooth', hops)
-globalThis.arcdropOpenURL = (url) => handleText(url, 'AirDrop') // arcdrop://pay#p=… opened by iOS
+globalThis.arcdropOpenURL = (url) => handleText(url, 'lien externe') // arcdrop://… opened by iOS (AirDrop, or any app/site)
 
 // Anything scanned, pasted or opened: a payment request or a payment.
 function handleText(text, via) {
@@ -589,11 +655,12 @@ for (const id of ['copyAddr', 'copyAddr2']) $(id).onclick = async () => { await 
 
 // AirDrop / any link opens the app with #p=… (payment) or #r=… (request).
 function handleHash() {
-  if (/arcdrop(-req)?:\d:/.test(location.hash)) {
-    const h = decodeURIComponent(location.hash)
-    history.replaceState(null, '', location.pathname + location.search)
-    handleText(h, 'AirDrop')
-  }
+  if (!/arcdrop(-req)?:\d:/.test(location.hash)) return
+  const h = location.hash
+  history.replaceState(null, '', location.pathname + location.search)
+  let text = h
+  try { text = decodeURIComponent(h) } catch { /* malformed: use as is */ }
+  handleText(text, 'lien')
 }
 addEventListener('hashchange', handleHash)
 
@@ -631,9 +698,9 @@ $('scanTo').onclick = () => {
   scan((t) => {
     const r = decodeRequest(t)
     if (r) return applyRequest(r)
-    const m = t.match(/0x[0-9a-fA-F]{40}/)
+    const m = String(t).trim().match(/^(?:ethereum:)?(0x[0-9a-fA-F]{40})(?:@\d+)?$/)
     tab('pay')
-    if (m) { $('payTo').value = getAddress(m[0]); pendingRequest = null; renderWho(); renderNearby() } else toast('Pas une adresse')
+    if (m) { $('payTo').value = getAddress(m[1]); pendingRequest = null; renderWho(); renderNearby() } else toast('Pas une adresse')
   })
 }
 
@@ -664,11 +731,11 @@ async function renderRequest() {
 function renderRequestStatus() {
   if (!activeRequest?.value) return
   const seen = new Set()
-  const got = store.get('inbox', []).map((i) => ({ i, p: tryDecode(i.packet) }))
+  const got = acct.get('inbox', []).map((i) => ({ i, p: tryDecode(i.packet) }))
     .filter(({ i, p }) => p && i.at >= activeRequest.since && p.chainId === chainId && p.to === account.address
       && amountOf(i, p) === activeRequest.value && (p.token ?? 0) === activeRequest.token && i.status !== 'failed'
       && !seen.has(payId(p)) && seen.add(payId(p)))
-  const paid = got.filter(({ i }) => i.status === 'settled').length
+  const paid = got.filter(({ i }) => i.status === 'settled').length // partial / unverified never count
   $('reqStatus').innerHTML = got.length
     ? `<b>✓ ${paid} réglé${paid > 1 ? 's' : ''} sur Arc</b>${got.length > paid ? ` · ${got.length - paid} en attente de réseau` : ''} · ${got.map(({ p }) => esc(nameOf(p.from))).join(', ')}`
     : `Le payeur scanne ce QR : ${money(activeRequest.value, activeRequest.token)} pour toi, déjà rempli.`
@@ -693,11 +760,11 @@ let settling = false
 // Lists can change while a slow network call is in flight (a new payment arrives, a new one
 // is signed): always re-read and update the one entry, never write back an old snapshot.
 function updateEntry(list, packet, patch) {
-  const all = store.get(list, [])
+  const all = acct.get(list, [])
   const entry = all.find((x) => x.packet === packet)
   if (!entry) return null
   Object.assign(entry, patch)
-  store.set(list, all)
+  acct.set(list, all)
   return entry
 }
 
@@ -707,19 +774,19 @@ async function settleAll() {
   if (settling) { settleAgain = true; return } // something arrived mid-run: one more pass after
   settling = true
   try {
-    for (const pending of store.get('inbox', []).filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
-      const result = await settleOne(pending.packet, true)
+    for (const pending of acct.get('inbox', []).filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
+      const result = await settleOne(pending.packet, true, pending)
       if (result.status === 'settled' && !pending.settledAt) result.settledAt = Date.now()
       const item = updateEntry('inbox', pending.packet, result)
       renderInbox(); renderRequestStatus()
       if (!item) continue
       const p = decodePayment(item.packet)
       if (item.status === 'settled' && txUrl(hashOf(item.tx))) {
-        confirmSettled({ title: 'Paiement reçu', amount: `+${money(amountOf(item, p), p.token)}`, sub: `de ${nameOf(p.from)} · par ${item.via ?? '—'}`, ms: item.ms, tx: txUrl(hashOf(item.tx)) })
+        confirmSettled({ title: 'Paiement reçu', amount: `+${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token)}`, sub: `de ${nameOf(p.from)} · par ${item.via ?? '—'}`, ms: item.ms, tx: txUrl(hashOf(item.tx)) })
       }
     }
     // Strangers' payments: forwarded through the gateway only, never with our own gas.
-    for (const r of relays.filter((x) => x.status === 'pending')) { Object.assign(r, await settleOne(r.packet, false)); renderInbox() }
+    for (const r of relays.filter((x) => x.status === 'pending')) { Object.assign(r, await settleOne(r.packet, false, r)); renderInbox() }
     await refreshSent()
     refreshBalance()
   } finally {
@@ -729,48 +796,64 @@ async function settleAll() {
 }
 
 // "Settled" only with on-chain proof that exactly this amount reached exactly this recipient.
-async function proven(p, hash, ms) {
+async function proven(p, hash, ms, item) {
   const c = await confirmSettlement(p, { txHash: hash }).catch(() => null)
   if (c?.paid) return { status: 'settled', tx: c.tx, ms, note: undefined }
-  if (c) return { status: 'failed', note: 'NON payé : le numéro de ce paiement a servi à une autre transaction' }
-  return { status: 'pending', note: 'vérification sur Arc impossible pour le moment' }
+  if (!c) return { status: 'pending', note: 'vérification sur Arc impossible pour le moment' }
+  if (p.tab) {
+    const prev = BigInt(item?.prev ?? 0)
+    const got = c.paidUpTo > prev ? c.paidUpTo - prev : 0n
+    if (got > 0n) return { status: 'partial', received: got.toString(), tx: c.tx, note: `payé ${money(got, p.token)} sur ${money(amountOf(item, p), p.token)} : ardoise dépassée ou vidée` }
+    return { status: 'pending', note: 'ardoise pas encore encaissée' }
+  }
+  if (c.unknown) return { status: 'unverified', note: 'déjà utilisé sur Arc, mais preuve introuvable (règlement ancien ?) : ne compte pas comme payé' }
+  return { status: 'failed', note: 'NON payé : le numéro de ce paiement a servi à une autre transaction' }
 }
 
-async function settleOne(packet, mine) {
+async function settleOne(packet, mine, item) {
   const p = decodePayment(packet)
-  if (p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) return { status: 'failed', note: 'expiré avant d’avoir été réglé' }
+  const now = Math.floor(Date.now() / 1000)
   const status = await checkPayment(p).catch(() => null)
-  if (status?.settled) return proven(p) // used already: by this payment, or burnt by the payer?
+  if (status?.settled || (p.tab && status?.paidUpTo > BigInt(item?.prev ?? 0) && !status.funded)) return proven(p, undefined, undefined, item)
+  if (p.tab && status && status.tab.epoch !== p.epoch) return { status: 'failed', note: 'ardoise fermée avant encaissement : non payé' }
+  if (p.tab && status && status.tab.expiry <= now) return { status: 'failed', note: 'ardoise expirée avant encaissement : non payé' }
+  if (!p.tab && p.validBefore <= BigInt(now)) return { status: 'failed', note: 'expiré avant d’avoir été réglé' }
   if (status && !status.funded) return { status: 'pending', note: `payeur pas assez approvisionné (${money(status.payerBalance, p.token)})` }
 
-  // 1) the gateway pays the gas
+  // 1) the gateway pays the gas. Its errors are never final: only chain evidence or expiry are.
+  let gatewayNote
   try {
-    const r = await fetch(`${gateway()}/api/relay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ packet }) })
+    const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 12_000)
+    const r = await fetch(`${gateway()}/api/relay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ packet }), signal: ctrl.signal })
+    clearTimeout(timer)
     const out = await r.json()
-    if (out.ok && out.hash) return proven(p, out.hash, Number(out.settleMs) || undefined)
-    if (out.ok && out.alreadySettled) return proven(p)
-    if (!out.simulated && r.status !== 404) return { status: [402, 429, 503].includes(r.status) ? 'pending' : 'failed', note: String(out.error ?? '').slice(0, 120) }
-  } catch { /* no gateway reachable */ }
+    if (out.ok && out.hash) return proven(p, out.hash, Number(out.settleMs) || undefined, item)
+    if (out.ok && out.alreadySettled) return proven(p, undefined, undefined, item)
+    gatewayNote = String(out.error ?? `passerelle : ${r.status}`).slice(0, 100)
+  } catch { gatewayNote = 'passerelle injoignable' }
 
   // 2) this device pays the gas, only for payments addressed to us (never for strangers' floods)
-  if (!mine || p.value < MIN_VALUE) return { status: 'pending', note: 'en attente de la passerelle' }
+  if (!mine || p.value < MIN_VALUE) return { status: 'pending', note: gatewayNote }
   try {
     const t0 = performance.now()
+    await simulatePayment(p, { relayer: account.address }) // a doomed tx would cost us gas for nothing
     const res = await settlePayment(p, { relayerAccount: account })
-    return proven(p, res.hash, Math.round(performance.now() - t0))
+    return proven(p, res.hash, Math.round(performance.now() - t0), item)
   } catch (e) {
-    return { status: 'pending', note: `en attente : ${e.shortMessage ?? e.message}`.slice(0, 140) }
+    return { status: 'pending', note: `${gatewayNote} · ${e.shortMessage ?? e.message}`.slice(0, 140) }
   }
 }
 
 async function refreshSent() {
-  for (const s of store.get('sent', []).filter((s) => s.status === 'pending')) {
+  for (const s of acct.get('sent', []).filter((s) => s.status === 'pending')) {
     const p = tryDecode(s.packet)
     if (!p) continue
     try {
-      if (p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) { updateEntry('sent', s.packet, { status: 'failed' }); continue }
-      if ((await checkPayment(p)).settled) {
-        const r = await proven(p)
+      if (!p.tab && p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) { updateEntry('sent', s.packet, { status: 'failed' }); continue }
+      const st = await checkPayment(p)
+      if (p.tab && st.tab.epoch !== p.epoch) { updateEntry('sent', s.packet, { status: 'failed' }); continue }
+      if (st.settled) {
+        const r = await proven(p, undefined, undefined, s)
         updateEntry('sent', s.packet, { status: r.status, settledAt: Date.now() })
         if (r.status === 'settled') confirmSettled({ title: 'Paiement réglé', amount: money(amountOf(s, p), p.token), sub: `à ${nameOf(p.to)} · final sur Arc`, tx: r.tx })
       }
@@ -811,7 +894,7 @@ const ICON_IN = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentC
 const ICON_OUT = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>'
 const ICON_RELAY = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg>'
 const EMPTY = '<div class="empty">Aucun paiement pour l\'instant</div>'
-const STATE = { pending: 'en attente', delivered: 'reçu ✓', settled: 'réglé', failed: 'échec' }
+const STATE = { pending: 'en attente', delivered: 'reçu ✓', settled: 'réglé', failed: 'échec', partial: 'partiel', unverified: 'à vérifier' }
 
 document.addEventListener('click', (e) => {
   const row = e.target.closest('[data-expand]')
@@ -845,7 +928,7 @@ function txCell({ icon, kind, title, sub, amount, amountClass = '', status, deta
 }
 
 function renderInbox() {
-  const inbox = [...store.get('inbox', []), ...relays]
+  const inbox = [...acct.get('inbox', []), ...relays]
   $('inbox').innerHTML = inbox.length ? inbox.slice(0, 100).map((item) => {
     const p = tryDecode(item.packet)
     if (!p) return ''
@@ -854,15 +937,16 @@ function renderInbox() {
     return txCell({
       icon: mine ? ICON_IN : ICON_RELAY, kind: mine ? 'in' : 'relay',
       title: mine ? `De ${nameOf(p.from)}` : 'Relayé',
-      sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`) + (p.tab && item.guaranteed ? ' · 🔒 garanti' : ''),
-      amount: `${mine ? '+' : ''}${money(amountOf(item, p), p.token)}`, amountClass: mine ? 'in' : '',
+      sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`)
+        + (p.tab && item.guaranteed && item.status === 'pending' && (item.redeemBefore ?? 0) > Date.now() / 1000 ? ` · 🔒 garanti jusqu’au ${day(item.redeemBefore)}` : ''),
+      amount: `${mine ? '+' : ''}${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token)}`, amountClass: mine && item.status === 'settled' ? 'in' : '',
       status: item.status, details: journey(item, p),
     })
   }).join('') : EMPTY
 }
 
 function renderSent() {
-  const sent = store.get('sent', [])
+  const sent = acct.get('sent', [])
   $('sent').innerHTML = sent.length ? sent.map((s) => {
     const p = tryDecode(s.packet)
     if (!p) return ''
@@ -881,6 +965,8 @@ function tab(name) {
   for (const b of document.querySelectorAll('nav button')) b.setAttribute('aria-selected', String(b.dataset.tab === name))
   for (const s of document.querySelectorAll('section')) s.hidden = s.id !== `tab-${name}`
   $('compactTitle').textContent = $(`tab-${name}`).dataset.title
+  currentTab = name
+  announce()
   scrollTo({ top: 0 })
   if (name !== 'receive') stopScan()
 }
@@ -892,12 +978,15 @@ $('gateway').onchange = (e) => store.set('gateway', e.target.value.trim())
 $('myName').onchange = (e) => { store.set('name', e.target.value.trim()); announce(); toast('Nom visible par les appareils proches') }
 $('exportKey').onclick = async () => { await copy(key); toast('Clé privée copiée. Ne la partage jamais.') }
 $('importKey').onclick = () => {
+  if (!confirm('Importer une clé remplace ce wallet sur cet appareil. As-tu exporté la clé actuelle ?')) return
   const k = prompt('Clé privée (0x…)')
   if (!k) return
   try {
     account = privateKeyToAccount(k.trim()); key = k.trim()
-    if (mesh) mesh.postMessage({ type: 'saveKey', key }); else store.set('key', key)
-    renderWallet(); announce(); refreshBalance(); toast('Clé importée')
+    store.set('key', key)
+    if (mesh) mesh.postMessage({ type: 'saveKey', key, replace: true })
+    contacts = acct.get('contacts', {})
+    renderWallet(); renderInbox(); renderSent(); renderTabs(); announce(); refreshBalance(); toast('Clé importée')
   } catch { toast('Clé invalide') }
 }
 

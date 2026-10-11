@@ -31,9 +31,33 @@ console.log('✓ malformed relay / tab-funding input refused with neutral errors
 const w = privateKeyToAccount(generatePrivateKey()).address
 const verdicts = Array.from({ length: 5 }, () => limit({ payer: w }))
 assert.deepEqual(verdicts.slice(0, 3), [null, null, null]); assert.match(verdicts[3], /too many/)
-const ipVerdicts = Array.from({ length: 25 }, () => limit({ ip: '203.0.113.7' }))
-assert.equal(ipVerdicts.filter((v) => v === null).length, 20)
+const ipVerdicts = Array.from({ length: 35 }, () => limit({ ip: '203.0.113.7' }))
+assert.equal(ipVerdicts.filter((v) => v === null).length, 30)
 console.log('✓ per-wallet and per-IP rate limits')
+
+// spraying many keys must not reset the limits of a targeted wallet
+const victim = privateKeyToAccount(generatePrivateKey()).address
+for (let i = 0; i < 3; i++) limit({ payer: victim })
+for (let i = 0; i < 25_000; i++) limit({ payer: `spray-${i}` })
+assert.match(limit({ payer: victim }) ?? '', /too many|busy/)
+console.log('✓ key spraying does not wipe other wallets\' limits')
+
+// a forged tab funding request must not consume the named payer's quota (griefing)
+{
+  const { createTabFunding } = await import('../core/arcdrop.js')
+  const payer = privateKeyToAccount(generatePrivateKey()), friend = privateKeyToAccount(generatePrivateKey())
+  const real = await createTabFunding({ account: payer, to: friend.address, amount: '1', chainId: 5042002 })
+  const forger = privateKeyToAccount(generatePrivateKey())
+  const forged = await createTabFunding({ account: forger, to: friend.address, amount: '1', chainId: 5042002 })
+  for (let i = 0; i < 30; i++) {
+    const r = await fund({ ...forged, from: payer.address }, { ip: `198.51.100.${i}` })
+    assert.equal(r.body.error, 'bad signature')
+  }
+  // the real payer still has their whole quota (the request then fails later only for lack of funds)
+  const r = await fund(JSON.parse(JSON.stringify(real, (_, v) => (typeof v === 'bigint' ? v.toString() : v))), { ip: '198.51.100.250' })
+  assert.doesNotMatch(String(r.body.error), /this wallet/, 'payer quota untouched by forgeries')
+  console.log('✓ forged tab fundings cannot exhaust a payer\'s quota')
+}
 
 // CORS: only the app's own origins
 assert.equal(corsHeaders('https://arcdrop-pink.vercel.app')['access-control-allow-origin'], 'https://arcdrop-pink.vercel.app')

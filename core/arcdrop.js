@@ -113,7 +113,9 @@ export const USDC_ABI = [
 export const domain = (chainId, token = 0) => ({ name: TOKENS[token].name, version: '2', chainId, verifyingContract: tokenAddress(chainId, token) })
 
 export function parseUsdc(amount) {
-  const [whole, frac = ''] = String(amount).trim().split('.')
+  const text = String(amount).trim()
+  if (!/^\d+(\.\d*)?$/.test(text)) throw new Error(`invalid amount: ${amount}`)
+  const [whole, frac = ''] = text.split('.')
   if (!/^\d+$/.test(whole) || !/^\d*$/.test(frac) || frac.length > USDC_DECIMALS) throw new Error(`invalid amount: ${amount}`)
   return BigInt(whole) * 10n ** BigInt(USDC_DECIMALS) + BigInt(frac.padEnd(USDC_DECIMALS, '0'))
 }
@@ -337,7 +339,7 @@ export async function settlePayment(p, { relayerAccount, rpcUrl }) {
   const wallet = createWalletClient({ account: relayerAccount, chain, transport: http(rpcUrl) })
   const client = publicClient(p.chainId, rpcUrl)
   const hash = await wallet.writeContract(settleCall(p))
-  const receipt = await client.waitForTransactionReceipt({ hash, pollingInterval: 150 })
+  const receipt = await client.waitForTransactionReceipt({ hash, pollingInterval: 150, timeout: 25_000 })
   return { hash, status: receipt.status, blockNumber: receipt.blockNumber, url: `${chain.blockExplorers.default.url}/tx/${hash}` }
 }
 
@@ -417,7 +419,7 @@ export async function createTabFunding({ account, to, amount, days = 7, chainId,
   if (recipient === account.address) throw new Error('cannot open a tab to yourself')
   const expiry = BigInt(now + Math.round(days * 86_400))
   const salt = randomNonce()
-  const nonce = keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'address' }, { type: 'uint256' }, { type: 'bytes32' }], [FUND_TYPEHASH, recipient, expiry, salt]))
+  const nonce = tabFundingNonce({ recipient, expiry, salt })
   const message = {
     from: account.address, to: tabsAddress(chainId), value: typeof amount === 'bigint' ? amount : parseUsdc(amount),
     validAfter: 0n, validBefore: BigInt(now + 3600), nonce,
@@ -425,6 +427,10 @@ export async function createTabFunding({ account, to, amount, days = 7, chainId,
   const signature = await account.signTypedData({ domain: domain(chainId, token), types: RECEIVE_TYPES, primaryType: 'ReceiveWithAuthorization', message })
   return { chainId, token, from: account.address, recipient, expiry, salt, value: message.value, validAfter: 0n, validBefore: message.validBefore, signature }
 }
+
+// The EIP-3009 nonce of a tab funding: commits to recipient and expiry (see ArcDropTabs.fund).
+export const tabFundingNonce = (f) => keccak256(encodeAbiParameters(
+  [{ type: 'bytes32' }, { type: 'address' }, { type: 'uint256' }, { type: 'bytes32' }], [FUND_TYPEHASH, getAddress(f.recipient), BigInt(f.expiry), f.salt]))
 
 export const fundCall = (f) => ({
   address: tabsAddress(f.chainId), abi: TABS_ABI, functionName: 'fund',

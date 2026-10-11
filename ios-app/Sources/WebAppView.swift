@@ -26,6 +26,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     private let mesh = ArcMesh()
     private var loaded = false
     private var pendingURLs: [URL] = []
+    private var peers = 0 // last count reported on the main thread (ArcMesh's own counter lives on its queue)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -54,7 +55,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         mesh.delegate = self
         NotificationCenter.default.addObserver(forName: .arcdropOpenURL, object: nil, queue: .main) { [weak self] note in
             guard let self, let url = note.object as? URL else { return }
-            if self.loaded { self.call("arcdropOpenURL", url.absoluteString) } else { self.pendingURLs.append(url) }
+            if self.loaded { self.call("arcdropOpenURL", url.absoluteString) } else if self.pendingURLs.count < 10 { self.pendingURLs.append(url) }
         }
     }
 
@@ -75,6 +76,8 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
             ArcDropRelay.shared.observe(packet) // settle right away if this phone is online (ignores receipts)
         case "profile":
             if let address = body["address"] as? String { mesh.setProfile(address: address, name: body["name"] as? String ?? "") }
+        case "presence":
+            if body["on"] as? Bool == false { mesh.stopPresence() }
         case "share":
             var items: [Any] = []
             if let text = body["text"] as? String { items.append(text) }
@@ -83,7 +86,11 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
             sheet.popoverPresentationController?.sourceView = view
             present(sheet, animated: true)
         case "saveKey":
-            if let key = body["key"] as? String { Keychain.save(key) }
+            // Never overwrite an existing wallet unless the user explicitly imported a key.
+            guard let key = body["key"] as? String else { return }
+            let replace = body["replace"] as? Bool ?? false
+            let ok = Keychain.load() == nil || replace ? Keychain.save(key) : Keychain.load() == key
+            call("arcdropKeySaved", ok)
         case "haptic":
             switch body["kind"] as? String {
             case "light": UISelectionFeedbackGenerator().selectionChanged()
@@ -102,7 +109,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         call("arcdropReceive", packet, hops)
     }
 
-    func mesh(_ mesh: ArcMesh, peersChanged count: Int) { call("arcdropMeshPeers", count) }
+    func mesh(_ mesh: ArcMesh, peersChanged count: Int) { peers = count; call("arcdropMeshPeers", count) }
 
     func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String) { call("arcdropReceipt", receipt) }
 
@@ -121,7 +128,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     // When the web app finishes loading: nearby devices, and any payment link that opened the app.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loaded = true
-        call("arcdropMeshPeers", mesh.peerCount)
+        call("arcdropMeshPeers", peers)
         for url in pendingURLs { call("arcdropOpenURL", url.absoluteString) }
         pendingURLs = []
     }
@@ -131,6 +138,14 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     // Camera for the QR scanner: the app already asked iOS for camera access.
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(type == .camera && frame.isMainFrame && origin.protocol == "file" ? .grant : .deny)
+    }
+
+    // window.confirm (used before importing a key).
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Annuler", style: .cancel) { _ in completionHandler(false) })
+        alert.addAction(UIAlertAction(title: "Continuer", style: .destructive) { _ in completionHandler(true) })
+        present(alert, animated: true)
     }
 
     // window.prompt (used by "Importer une clé").
@@ -175,12 +190,17 @@ enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func save(_ key: String) {
-        guard load() != key else { return }
-        SecItemDelete(query as CFDictionary)
+    /// Adds or updates in place (never delete-then-add: a failed add would lose the wallet).
+    @discardableResult
+    static func save(_ key: String) -> Bool {
+        if load() == key { return true }
+        let data = Data(key.utf8)
+        let update = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if update == errSecSuccess { return load() == key }
+        guard update == errSecItemNotFound else { return false }
         var q = query
-        q[kSecValueData as String] = Data(key.utf8)
+        q[kSecValueData as String] = data
         q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(q as CFDictionary, nil)
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess && load() == key
     }
 }

@@ -86,3 +86,9 @@ precondition(!ArcMesh.plausible(envelopeV1(chain: 5042002, value: 100_000, valid
 precondition(!ArcMesh.plausible(envelopeV1(chain: 5042002, value: 100_000, validAfter: nowS + 3600, validBefore: nowS + 7200)), "postdated")
 precondition(ArcMesh.plausible(ArcMesh.envelope(from: args[0])!), "real packet plausible")
 print("✓ expired, zero, postdated and unknown-chain payments are dropped by the mesh")
+precondition(!ArcMesh.plausible(envelopeV1(chain: 5042002, value: 100_000, validAfter: 0, validBefore: nowS + 30 * 86_400)), "years-long validity")
+precondition(!ArcMesh.plausible(envelopeV1(chain: 5042002, value: 5, validAfter: 0, validBefore: nowS + 3600)), "dust")
+var v2usdc = envelopeV1(chain: 5042002, value: 100_000, validAfter: 0, validBefore: nowS + 3600)
+v2usdc.insert(0, at: 1) // token byte 0 in a v2 packet
+precondition(!ArcMesh.plausible(v2usdc), "v2 with token 0")
+print("✓ long-lived, dust and fake-EURC packets are dropped too")

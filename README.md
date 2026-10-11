@@ -70,7 +70,15 @@ The project was attacked by three independent AI reviewers (contract, gateway/co
 - `scripts/attack-e2e.mjs`: live burnt-nonce attack on testnet; ArcDrop reports the payment as NOT paid, because "settled" requires an on-chain transfer of exactly that amount to exactly that recipient.
 - `scripts/tabs-e2e.mjs`: live tab attacks (redirected funding, self-redeem, early close, replay, forged amount, wrong epoch, overspend).
 
-Known limits: outside a tab, an offline payment is a promise (the payer's balance can only be checked online); tab guarantees require the recipient to redeem before the tab expires (the app does it as soon as it is online); gateway rate limits are per instance.
+Two rounds of review (seven AI reviewers in total). Round two also produced: one transfer counted for two packets (fixed: the transfer must directly follow its own authorization), tab vouchers above the locked amount shown as fully paid (now "partial"), a payer blocking their own recipient's redemptions through rate limits (quotas now keyed after signature checks, tab vouchers per recipient), gas recycling through wallet loops (sponsored funds are not re-sponsored for an hour), lost updates during settlement, a key-saving path that could lose the wallet (now add-or-update, never overwrite), and mesh crowding (per-kind quotas, own payments never evicted, per-payer caps, token-bucket budgets, hop-poisoning repair, resync).
+
+### Residual risks (stated, not hidden)
+
+- **Outside a tab, an offline payment is a promise.** The app says "NOT PAID YET" until Arc confirms it.
+- **Tabs must be cashed in before they expire.** The receiver trusts a tab only if it has at least 24 h left and shows the deadline; the app redeems as soon as it is online.
+- **Bluetooth is an open radio.** Nearby, your wallet address and display name are visible to anyone in range while the Pay screen is open (presence is off otherwise). Payments carried for others reveal payer, recipient and amount to the phones that carry them. A hostile device in range can crowd out *other people's* payments a phone is carrying; your own payments are never evicted.
+- **The gateway's limits are per instance.** A production deployment should keep counters and the gas budget in shared storage (e.g. Redis).
+- **The wallet key** lives in the iOS Keychain (this device only: export it to move phones) or in browser storage on the web demo.
 
 ## Run it
 

@@ -109,6 +109,10 @@ actor ArcDropRelay {
     // nonce must not be able to get the genuine payment ignored.
     private var queue: [String: ArcDropPacket.Info] = [:]
     private(set) var states: [String: State] = [:]
+    // Transient failures (offline, unfunded yet, rate limits, gateway errors) back off and retry;
+    // a packet that keeps failing is eventually dropped so junk can't occupy the queue forever.
+    private var attempts: [String: (count: Int, next: Date)] = [:]
+    static let maxAttempts = 12
     private var retryTask: Task<Void, Never>?
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -140,6 +144,9 @@ actor ArcDropRelay {
         if states.count >= Self.maxStates {
             states = states.filter { if case .queued = $0.value { return true } else { return false } }
         }
+        if queue.count >= Self.maxQueue, let worst = attempts.filter({ queue[$0.key] != nil }).max(by: { $0.value.count < $1.value.count }), worst.value.count > 0 {
+            queue[worst.key] = nil; attempts[worst.key] = nil; states[worst.key] = .rejected("dropped after repeated failures")
+        }
         guard queue.count < Self.maxQueue, states.count < Self.maxStates else { return }
         queue[key] = info
         states[key] = .queued
@@ -154,27 +161,38 @@ actor ArcDropRelay {
         let now = UInt32(Date().timeIntervalSince1970)
         for (key, info) in queue where info.validBefore <= now { queue[key] = nil; states[key] = .rejected("expired") }
         for (key, info) in queue {
+            if let a = attempts[key], a.next > Date() { continue }
             var request = URLRequest(url: gateway.appendingPathComponent("api/relay"))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["packet": info.packet])
             guard let (data, response) = try? await session.data(for: request),
                   let status = (response as? HTTPURLResponse)?.statusCode else {
-                continue    // offline: keep it, retry later
+                backOff(key)    // offline: keep it, retry later
+                continue
             }
             let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
             switch status {
             case 200 where body["ok"] as? Bool == true:
                 states[key] = .settled(tx: body["url"] as? String, ms: body["settleMs"] as? Int)
-                queue[key] = nil
-            case 402:
-                continue    // payer not funded yet; keep carrying it
-            default:
-                states[key] = .rejected(body["error"] as? String ?? "HTTP \(status)")
-                queue[key] = nil
+                queue[key] = nil; attempts[key] = nil
+            case 400, 422:  // the packet itself is bad or would fail on-chain
+                states[key] = .rejected(String((body["error"] as? String ?? "HTTP \(status)").prefix(120)))
+                queue[key] = nil; attempts[key] = nil
+            default:        // 402 not funded yet, 429 rate limited, 5xx: transient
+                backOff(key)
             }
         }
         scheduleRetry()
+    }
+
+    private func backOff(_ key: String) {
+        let n = (attempts[key]?.count ?? 0) + 1
+        guard n <= Self.maxAttempts else {
+            queue[key] = nil; attempts[key] = nil; states[key] = .rejected("gave up after repeated failures")
+            return
+        }
+        attempts[key] = (n, Date().addingTimeInterval(min(15 * pow(2, Double(n - 1)), 1_800)))
     }
 
     /// Where a payment stands, by packet text (`arcdrop:1:…`).

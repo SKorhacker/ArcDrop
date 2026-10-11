@@ -56,7 +56,13 @@ public final class ArcMesh: NSObject {
     static let helloEvery: TimeInterval = 5
     static let nearbyTimeout: TimeInterval = 20
     // Abuse limits: any nearby device can send anything, as often as it likes.
-    static let maxMessagesPerLinkPerMinute = 60
+    static let linkBurst = 600.0         // messages a link may send at once (a full catch-up)
+    static let linkRefillPerSecond = 1.0
+    static let frameBurst = 4000.0       // frames, counted before reassembly
+    static let frameRefillPerSecond = 20.0
+    static let maxStoredReceipts = 100
+    static let maxPerPayer = 5           // stored payments per payer address (flood guard)
+    static let maxLinks = 300
     static let maxPendingNotify = 200
     static let maxNearby = 30
     static let catchUpCooldown: TimeInterval = 30
@@ -80,8 +86,9 @@ public final class ArcMesh: NSObject {
     private var store: [Data: (envelope: Data, hops: UInt8, seen: Date)] = [:]
     private var assembler = FrameAssembler()
     private var pendingNotify: [(Data, [CBCentral]?)] = []
-    private var linkTraffic: [UUID: (window: Date, count: Int)] = [:]
+    private var linkBudget: [UUID: (messages: Double, frames: Double, at: Date)] = [:]
     private var lastCatchUp: [UUID: Date] = [:]
+    private var myAddress: Data?
 
     // Presence: who is behind each link, and how strong their signal is.
     private var profile: Data?
@@ -106,7 +113,7 @@ public final class ArcMesh: NSObject {
     public func broadcast(_ text: String) {
         guard let envelope = Self.envelope(from: text) else { log("not an ArcDrop message"); return }
         queue.async {
-            guard self.remember(envelope, hops: 0) else { return }
+            guard self.remember(envelope, hops: 0) == .new else { return }
             self.send(envelope, hops: 0, to: nil)
         }
     }
@@ -115,11 +122,20 @@ public final class ArcMesh: NSObject {
     public func setProfile(address: String, name: String) {
         guard let addr = Data(hex: address), addr.count == 20 else { return }
         var body = Data([Kind.hello.rawValue]) + addr
-        body.append(Data(name.prefix(32).utf8))
+        // At most 32 UTF-8 bytes, cut on a character boundary.
+        var bytes = Data()
+        for ch in name { let c = Data(String(ch).utf8); if bytes.count + c.count > 32 { break }; bytes.append(c) }
+        body.append(bytes)
         queue.async {
+            self.myAddress = addr
             self.profile = body
             self.send(body, hops: 0, to: nil)
         }
+    }
+
+    /// Stop announcing ourselves (privacy: presence only while the Pay screen is open).
+    public func stopPresence() {
+        queue.async { self.profile = nil }
     }
 
     // MARK: Text <-> envelope (same encodings as core/arcdrop.js)
@@ -148,18 +164,48 @@ public final class ArcMesh: NSObject {
 
     // MARK: Store & flood
 
-    /// Returns false if we already had it.
-    private func remember(_ envelope: Data, hops: UInt8) -> Bool {
+    enum Remembered { case new, fewerHops, known }
+
+    /// Payer (from) and recipient (to) of a payment envelope.
+    static func parties(_ envelope: Data) -> (from: Data, to: Data)? {
+        let b = [UInt8](envelope)
+        guard b.first == Kind.payment.rawValue else { return nil }
+        let o: Int
+        switch b.count - 1 { case 157: o = 5; case 158, 122: o = 6; default: return nil }
+        return (Data(b[o..<o + 20]), Data(b[o + 20..<o + 40]))
+    }
+
+    private func isMine(_ envelope: Data) -> Bool {
+        guard let me = myAddress, let p = Self.parties(envelope) else { return false }
+        return p.from == me || p.to == me
+    }
+
+    /// Stores an envelope. Receipts and payments have separate quotas; our own payments are
+    /// never evicted; one payer address cannot hold more than a few slots; a copy that
+    /// arrives with fewer hops replaces a "poisoned" high-hop copy.
+    private func remember(_ envelope: Data, hops: UInt8) -> Remembered {
         let key = Data(SHA256.hash(data: envelope))
-        guard store[key] == nil else { return false }
-        if store.count >= Self.maxStored {
-            // Expired payments go first, then the oldest.
-            let expired = store.filter { !Self.plausible($0.value.envelope) }.map(\.key)
-            for k in expired { store[k] = nil }
-            if store.count >= Self.maxStored, let oldest = store.min(by: { $0.value.seen < $1.value.seen })?.key { store[oldest] = nil }
+        if let old = store[key] {
+            guard hops < old.hops else { return .known }
+            store[key] = (old.envelope, hops, old.seen)
+            return .fewerHops
+        }
+        let isReceipt = envelope.first == Kind.receipt.rawValue
+        if let p = Self.parties(envelope), !isMine(envelope) {
+            let sameFrom = store.filter { Self.parties($0.value.envelope)?.from == p.from }
+            if sameFrom.count >= Self.maxPerPayer, let oldest = sameFrom.min(by: { $0.value.seen < $1.value.seen })?.key { store[oldest] = nil }
+        }
+        let sameKind = { (e: Data) in (e.first == Kind.receipt.rawValue) == isReceipt }
+        let quota = isReceipt ? Self.maxStoredReceipts : Self.maxStored - Self.maxStoredReceipts
+        if store.values.filter({ sameKind($0.envelope) }).count >= quota {
+            for (k, v) in store where sameKind(v.envelope) && !Self.plausible(v.envelope) { store[k] = nil } // expired first
+            if store.values.filter({ sameKind($0.envelope) }).count >= quota,
+               let oldest = store.filter({ sameKind($0.value.envelope) && !isMine($0.value.envelope) }).min(by: { $0.value.seen < $1.value.seen })?.key {
+                store[oldest] = nil // never our own payments
+            }
         }
         store[key] = (envelope, hops, Date())
-        return true
+        return .new
     }
 
     /// Cheap structural checks (no signature crypto here; the app verifies signatures):
@@ -173,28 +219,42 @@ public final class ArcMesh: NSObject {
         switch bytes.count - 1 {
         case 157, 158: // v1 / v2: [token] chainId from to value validAfter validBefore nonce sig
             let o = bytes.count - 1 == 158 ? 2 : 1
-            return knownChains.contains(UInt32(u(o, 4))) && u(o + 44, 8) > 0 && u(o + 52, 4) <= t && u(o + 56, 4) > t
+            if o == 2 && bytes[1] != 1 { return false } // v2 is EURC only
+            let validBefore = u(o + 56, 4)
+            return knownChains.contains(UInt32(u(o, 4))) && u(o + 44, 8) >= 10_000 && u(o + 52, 4) <= t
+                && validBefore > t && validBefore <= t + 8 * 86_400 // the app signs for 7 days
         case 122: // v4 tab voucher: token chainId from to epoch cumulative sig (expiry lives on-chain)
-            return knownChains.contains(UInt32(u(2, 4))) && u(50, 8) > 0
+            return bytes[1] <= 1 && knownChains.contains(UInt32(u(2, 4))) && u(50, 8) >= 10_000
         default: return false
         }
     }
 
-    /// Per-link budget so one device cannot flood the node.
-    private func withinBudget(_ link: UUID) -> Bool {
+    /// Token buckets per link: a full catch-up fits in the burst, a flood does not.
+    private func spend(_ link: UUID, messages: Double = 0, frames: Double = 0) -> Bool {
         let now = Date()
-        var entry = linkTraffic[link] ?? (now, 0)
-        if now.timeIntervalSince(entry.window) > 60 { entry = (now, 0) }
-        entry.count += 1
-        linkTraffic[link] = entry
-        if linkTraffic.count > 200 { linkTraffic = linkTraffic.filter { now.timeIntervalSince($0.value.window) < 60 } }
-        return entry.count <= Self.maxMessagesPerLinkPerMinute
+        var b = linkBudget[link] ?? (Self.linkBurst, Self.frameBurst, now)
+        let dt = now.timeIntervalSince(b.at)
+        b.messages = min(Self.linkBurst, b.messages + dt * Self.linkRefillPerSecond)
+        b.frames = min(Self.frameBurst, b.frames + dt * Self.frameRefillPerSecond)
+        b.at = now
+        let ok = b.messages >= messages && b.frames >= frames
+        if ok { b.messages -= messages; b.frames -= frames }
+        linkBudget[link] = b
+        if linkBudget.count > Self.maxLinks, let stale = linkBudget.min(by: { $0.value.at < $1.value.at })?.key { linkBudget[stale] = nil }
+        return ok
     }
 
     private func received(_ envelope: Data, hops: UInt8, from link: UUID) {
-        guard let first = envelope.first, let kind = Kind(rawValue: first), withinBudget(link) else { return }
+        guard let first = envelope.first, let kind = Kind(rawValue: first) else { return }
         if kind == .hello { return heard(envelope, from: link) }
-        guard Self.plausible(envelope), let text = Self.text(from: envelope), remember(envelope, hops: hops) else { return }
+        guard spend(link, messages: 1), Self.plausible(envelope), let text = Self.text(from: envelope) else { return }
+        switch remember(envelope, hops: hops) {
+        case .known: return
+        case .fewerHops: // a shorter path showed up: keep spreading it (defeats hop poisoning)
+            if hops < Self.maxHops { send(envelope, hops: hops, to: nil) }
+            return
+        case .new: break
+        }
         if kind == .payment {
             log("payment received (\(hops) hop\(hops == 1 ? "" : "s"))")
             DispatchQueue.main.async { self.delegate?.mesh(self, didReceive: text, hops: Int(hops)) }
@@ -224,6 +284,8 @@ public final class ArcMesh: NSObject {
             guard let char = link.char else { continue }
             let max = link.peripheral.maximumWriteValueLength(for: .withoutResponse)
             for frame in Self.frames(for: envelope, hops: hops + 1, maxLength: max) {
+                // Full write buffer: stop here; the periodic catch-up resends later.
+                guard link.peripheral.canSendWriteWithoutResponse else { break }
                 link.peripheral.writeValue(frame, for: char, type: .withoutResponse)
             }
         }
@@ -244,13 +306,20 @@ public final class ArcMesh: NSObject {
         // Reconnecting over and over must not make us resend everything each time.
         if let last = lastCatchUp[peer], Date().timeIntervalSince(last) < Self.catchUpCooldown { return }
         lastCatchUp[peer] = Date()
-        if lastCatchUp.count > 500 { lastCatchUp = lastCatchUp.filter { Date().timeIntervalSince($0.value) < Self.catchUpCooldown } }
-        for item in store.values where item.hops < Self.maxHops && Self.plausible(item.envelope) { send(item.envelope, hops: item.hops, to: peer) }
+        while lastCatchUp.count > Self.maxLinks, let stale = lastCatchUp.min(by: { $0.value < $1.value })?.key { lastCatchUp[stale] = nil }
+        // Our own payments first, then other payments, receipts last.
+        let items = store.values.filter { $0.hops < Self.maxHops && Self.plausible($0.envelope) }.sorted { a, b in
+            let rank = { (e: Data) in self.isMine(e) ? 0 : (e.first == Kind.payment.rawValue ? 1 : 2) }
+            return rank(a.envelope) < rank(b.envelope)
+        }
+        for item in items { send(item.envelope, hops: item.hops, to: peer) }
     }
 
     /// Every few seconds: say hello, refresh signal strength, forget silent neighbors.
     private func tick() {
         if let profile { send(profile, hops: 0, to: nil) }
+        // Periodic resync, so whatever didn't fit in a burst still reaches every neighbour.
+        for id in Set(outbound.keys).union(subscribers.keys) { catchUp(id) }
         for link in outbound.values where link.char != nil { link.peripheral.readRSSI() }
         hellos = hellos.filter { $0.value.seen.timeIntervalSinceNow > -Self.nearbyTimeout }
         publishNearby()
@@ -288,6 +357,7 @@ public final class ArcMesh: NSObject {
     }
 
     private func ingest(frame: Data, from link: UUID) {
+        guard spend(link, frames: 1) else { return }
         if let (bytes, hops) = assembler.add(frame, from: link) { received(bytes, hops: hops, from: link) }
     }
 
@@ -430,6 +500,7 @@ extension CBManagerState {
 struct FrameAssembler {
     struct Key: Hashable { let link: UUID; let id: UInt32 }
     static let maxPartial = 64
+    static let maxPartialPerLink = 4
     private var partial: [Key: (count: Int, hops: UInt8, pieces: [Int: Data], from: Date)] = [:]
 
     static let anyLink = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
@@ -444,6 +515,7 @@ struct FrameAssembler {
         if count == 1 { return (body, hops) }
 
         let key = Key(link: link, id: id)
+        if partial[key] == nil, partial.keys.filter({ $0.link == link }).count >= Self.maxPartialPerLink { return nil }
         if partial[key] == nil, partial.count >= Self.maxPartial {
             partial = partial.filter { $0.value.from.timeIntervalSinceNow > -30 }
             if partial.count >= Self.maxPartial, let oldest = partial.min(by: { $0.value.from < $1.value.from })?.key { partial[oldest] = nil }
