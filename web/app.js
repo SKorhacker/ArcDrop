@@ -181,6 +181,8 @@ function renderBalances() {
   $('balance').textContent = main == null ? '—' : money(main, token)
   $('balance2').hidden = !other
   $('balance2').textContent = other ? `et ${money(other, 1 - token)}` : ''
+  // The key exists only on this device: once there's money on it, ask once for a backup.
+  $('backupNag').hidden = !(BigInt(main ?? 0) > 0n || BigInt(other ?? 0) > 0n) || store.get(`${account.address}:backedUp`, false) === true
   renderTabs()
   renderAvail()
 }
@@ -990,7 +992,12 @@ addEventListener('scroll', () => $('navbar').classList.toggle('scrolled', scroll
 $('chainSel').onchange = (e) => { chainId = Number(e.target.value); store.set('chain', chainId); online = false; renderWallet(); probe() }
 $('gateway').onchange = (e) => store.set('gateway', e.target.value.trim())
 $('myName').onchange = (e) => { store.set('name', e.target.value.trim()); announce(); toast('Nom visible par les appareils proches') }
-$('exportKey').onclick = async () => { await copy(key); toast('Clé privée copiée. Ne la partage jamais.') }
+$('exportKey').onclick = $('backupKey').onclick = async () => {
+  await copy(key)
+  store.set(`${account.address}:backedUp`, true)
+  $('backupNag').hidden = true
+  toast('Clé privée copiée : colle-la dans ton gestionnaire de mots de passe. Ne la partage jamais.')
+}
 $('importKey').onclick = () => {
   if (!confirm('Importer une clé remplace ce wallet sur cet appareil. As-tu exporté la clé actuelle ?')) return
   const k = prompt('Clé privée (0x…)')
