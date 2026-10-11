@@ -1,0 +1,5 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "web/dist",
+  "functions": { "api/relay.mjs": { "maxDuration": 30 } }
+}

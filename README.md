@@ -1,0 +1,91 @@
+# ArcDrop
+
+**Pay in USDC with no internet. Carry the payment by QR code, AirDrop or Bluetooth mesh. It settles on Arc the moment any device gets a signal.**
+
+Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend: show a QR, AirDrop it, or drop it in [bitchat](https://github.com/permissionlesstech/bitchat), where it hops from phone to phone over Bluetooth. The first device in the chain that finds internet settles it on Arc, final in under a second.
+
+## How it works
+
+```
+ payer (offline)                 carriers (offline)                    any node online           Arc
+ ───────────────                 ──────────────────                    ───────────────           ───
+ sign EIP-3009        ──QR──▶    friend's phone
+ transferWithAuth     ──AirDrop─▶ friend's phone          ──────────▶  POST /api/relay  ──────▶  USDC.transferWithAuthorization
+ (157-byte packet)    ──bitchat─▶ phone ─BLE─▶ phone ─BLE─▶ phone ─────▶                           final in < 1 s
+```
+
+- **The payment is a signed USDC authorization** ([EIP-3009](https://eips.ethereum.org/EIPS/eip-3009)) against Arc's native USDC (`0x3600…0000`, FiatToken v2). Signing needs only the local key, so it works in airplane mode. No custom contract: the money moves through Circle's own USDC contract.
+- **Anyone can carry it, nobody can steal it.** The recipient, amount and expiry are inside the signature. A courier can only deliver it to the intended recipient, and the random nonce means it settles at most once, however many mesh paths it takes.
+- **Arc specifics that make this work:** gas is paid in USDC, so the relayer pays a known dollar amount (no ETH/SOL to hold); deterministic sub-second finality turns "pending" into "final" the instant a node reconnects; no reorgs means a settled payment never comes back.
+- **Packet:** `arcdrop:1:<base64url>`, 157 bytes (chainId, from, to, value, validAfter, validBefore, nonce, signature). It fits in a small QR code, a URL fragment (AirDrop) or a bitchat message.
+
+## The three transports
+
+| Transport | How | Status |
+|---|---|---|
+| **QR code** | Payer shows a QR, receiver scans it in the app (camera, offline) | Working in the web app |
+| **AirDrop** | "AirDrop" opens the iOS share sheet with a link `…/#p=arcdrop:1:…`; the receiver's offline-cached app imports it | Working in the web app (iOS ↔ iOS) |
+| **Bluetooth mesh** | Payment pasted as a bitchat message rides the BLE mesh. With the [bitchat patch](ios/), every bitchat node that has internet forwards the packet to the gateway automatically | Stock bitchat: works today (copy/paste). Patched bitchat: written, **not compiled yet** |
+
+## What's verified
+
+`npm test` runs offline tests plus read-only checks against **Arc mainnet** (no funds, no gas):
+
+- our EIP-712 domain matches the on-chain `DOMAIN_SEPARATOR` of USDC on Arc;
+- a signed `transferWithAuthorization` passes simulation on the real contract;
+- a tampered payment (recipient swapped) is rejected by the contract;
+- encode/decode round-trip, expiry, extraction from links and chat messages.
+
+## Run it
+
+```bash
+npm install
+npm test                          # offline + Arc mainnet read-only checks
+npm run build                     # bundles the web app into web/dist
+RELAYER_PRIVATE_KEY=0x… npm run dev   # app + gateway on http://localhost:8787
+```
+
+Without `RELAYER_PRIVATE_KEY`, the gateway verifies and simulates but does not submit. The relayer key only pays gas (fractions of a cent in USDC); it never holds user funds.
+
+Settle from the terminal (accepts a packet, a link or a whole bitchat message):
+
+```bash
+node relayer/cli.mjs '💸 5 USDC → 0xab…cd (ArcDrop)
+arcdrop:1:…'
+```
+
+Deploy (camera, service worker and AirDrop links need HTTPS): `vercel --prod`, then set `RELAYER_PRIVATE_KEY` in the project's environment variables.
+
+### bitchat (Bluetooth mesh)
+
+```bash
+git clone https://github.com/permissionlesstech/bitchat && cd bitchat
+git apply ../arcdrop/ios/bitchat-arcdrop.patch
+# set ArcDropRelay.defaultGateway to your deployed URL, then build with Xcode
+```
+
+The patch adds `Services/ArcDropRelay.swift` (packet decoder + relay queue) and three one-line hooks: on every received public/private message and on every sent message. bitchat is public domain (Unlicense).
+
+## Layout
+
+```
+core/arcdrop.js        packet format, offline sign/verify, status, settle (viem)
+web/                   offline-first PWA: pay, receive, QR, AirDrop, bitchat copy
+relayer/server.mjs     gateway: serves the app, POST /api/relay settles on Arc
+relayer/cli.mjs        settle from the terminal
+api/relay.mjs          same gateway as a Vercel function
+ios/                   bitchat integration (Swift) + patch
+test/                  tests, incl. Arc mainnet simulation
+```
+
+## Limits (on purpose, for an MVP)
+
+- **Offline, a payment is a promise.** The receiver can verify the signature offline, but cannot know whether the payer still has the funds until a node reaches Arc. The app shows "pending" until it is final.
+- The demo wallet key lives in the browser's storage: keep small amounts on it.
+- AirDrop only works between Apple devices; QR and bitchat cover the rest.
+
+## Roadmap
+
+- Sign payments directly inside bitchat (`/pay 5 @alice`), no web app needed.
+- Spending limits per offline session, to bound the "promise" risk.
+- Arc opt-in privacy (confidential amounts) once it ships.

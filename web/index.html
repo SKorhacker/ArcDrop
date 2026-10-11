@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ArcDrop</title>
+<meta name="description" content="Paie en USDC sans réseau. QR, AirDrop ou Bluetooth, réglé sur Arc.">
+<meta name="theme-color" content="#0b0b0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<style>
+  :root {
+    --bg: #0b0b0a; --fg: #ecebe4; --dim: #8a897f; --line: #2a2a26;
+    --accent: #c8ff3d; --warn: #ffb03d; --bad: #ff5a4e; --card: #141412;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--mono); }
+  body { min-height: 100dvh; padding: env(safe-area-inset-top) 16px calc(88px + env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto; }
+  body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .06;
+    background: repeating-linear-gradient(0deg, #fff 0 1px, transparent 1px 3px); }
+  header { display: flex; justify-content: space-between; align-items: baseline; padding: 18px 0 10px; border-bottom: 1px dashed var(--line); }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .08em; }
+  h1 span { color: var(--accent); }
+  .net { font-size: 12px; display: flex; gap: 8px; align-items: center; color: var(--dim); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block; }
+  .dot.on { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--dim); margin: 22px 0 10px; font-weight: 500; }
+  section[hidden] { display: none; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 12px 0 4px; }
+  input, textarea, select { width: 100%; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 12px; font: inherit; }
+  input:focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .amount { font-size: 40px; text-align: center; padding: 14px; letter-spacing: .02em; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+  button { font: inherit; border-radius: 6px; padding: 12px 14px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); color: #0b0b0a; border-color: var(--accent); font-weight: 700; width: 100%; margin-top: 14px; }
+  button:disabled { opacity: .4; cursor: default; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 12px 0; }
+  .qr { background: #fff; padding: 12px; border-radius: 8px; display: grid; place-items: center; margin: 12px 0; }
+  .qr img, .qr canvas { width: 100%; max-width: 320px; height: auto; image-rendering: pixelated; }
+  .transports { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .transports button { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; padding: 12px 6px; }
+  .transports b { font-size: 20px; }
+  .addr { word-break: break-all; font-size: 12px; color: var(--dim); }
+  .big { font-size: 28px; font-weight: 700; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .steps { list-style: none; padding: 0; margin: 10px 0 0; font-size: 13px; }
+  .steps li { padding: 4px 0 4px 22px; position: relative; color: var(--dim); }
+  .steps li::before { content: "○"; position: absolute; left: 0; }
+  .steps li.done { color: var(--fg); } .steps li.done::before { content: "●"; color: var(--accent); }
+  .steps li.fail { color: var(--bad); } .steps li.fail::before { content: "×"; color: var(--bad); }
+  .item { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; }
+  .tag.pending { color: var(--warn); } .tag.settled { color: var(--accent); } .tag.failed { color: var(--bad); }
+  a { color: var(--accent); }
+  nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; justify-content: center; background: rgba(11,11,10,.92); backdrop-filter: blur(8px); border-top: 1px solid var(--line); padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
+  nav div { display: flex; gap: 6px; width: 100%; max-width: 520px; }
+  nav button { flex: 1; border: 0; background: transparent; color: var(--dim); }
+  nav button[aria-selected="true"] { color: var(--accent); background: var(--card); }
+  video { width: 100%; border-radius: 8px; background: #000; }
+  .toast { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 10px 14px; border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .toast.show { opacity: 1; }
+  .warn { border-color: var(--warn); color: var(--warn); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ARC<span>DROP</span></h1>
+  <div class="net"><span id="netDot" class="dot"></span><span id="netLabel">hors ligne</span> · <span id="chainLabel"></span></div>
+</header>
+
+<!-- PAY -->
+<section id="tab-pay">
+  <h2>Payer · marche en mode avion</h2>
+  <label for="payTo">Destinataire (adresse 0x…)</label>
+  <div class="row">
+    <input id="payTo" placeholder="0x…" autocomplete="off" spellcheck="false">
+    <button id="scanTo" style="flex:0 0 auto">Scanner</button>
+  </div>
+  <label for="payAmount">Montant USDC</label>
+  <input id="payAmount" class="amount" inputmode="decimal" placeholder="0.00">
+  <button id="signBtn" class="primary">Signer le paiement</button>
+
+  <div id="payOut" hidden>
+    <div class="card">
+      <div class="muted">Paiement signé hors ligne</div>
+      <div class="big" id="outAmount"></div>
+      <div class="addr" id="outTo"></div>
+      <div class="qr" id="outQr"></div>
+      <h2>Transmettre sans réseau</h2>
+      <div class="transports">
+        <button id="tQr"><b>▦</b>QR code</button>
+        <button id="tShare"><b>⇪</b>AirDrop</button>
+        <button id="tMesh"><b>⌁</b>Bitchat</button>
+      </div>
+      <p class="muted" id="transportHint">Montre ce QR à ton pote. Ou envoie par AirDrop, ou colle dans bitchat : le paiement saute de téléphone en téléphone en Bluetooth.</p>
+    </div>
+  </div>
+</section>
+
+<!-- RECEIVE -->
+<section id="tab-receive" hidden>
+  <h2>Recevoir</h2>
+  <div class="card">
+    <div class="muted">Mon adresse (à scanner par le payeur)</div>
+    <div class="qr" id="myQr"></div>
+    <div class="addr" id="myAddr2"></div>
+  </div>
+  <div class="row">
+    <button id="scanPay">Scanner un paiement</button>
+    <button id="pastePay">Coller</button>
+  </div>
+  <video id="video" playsinline muted hidden></video>
+  <label for="pasteBox">…ou colle un paiement / un message bitchat</label>
+  <textarea id="pasteBox" rows="3" placeholder="arcdrop:1:…"></textarea>
+  <button id="importBtn" class="primary">Ajouter</button>
+  <h2>Paiements</h2>
+  <div id="inbox"><p class="muted">Rien pour l'instant.</p></div>
+</section>
+
+<!-- WALLET -->
+<section id="tab-wallet" hidden>
+  <h2>Portefeuille</h2>
+  <div class="card">
+    <div class="muted">Solde USDC sur Arc</div>
+    <div class="big" id="balance">—</div>
+    <div class="addr" id="myAddr"></div>
+  </div>
+  <div class="card warn">Démo : la clé vit dans ce navigateur. N'y mets que quelques dollars.</div>
+  <label for="chainSel">Réseau</label>
+  <select id="chainSel">
+    <option value="5042">Arc mainnet</option>
+    <option value="5042002">Arc testnet</option>
+  </select>
+  <label for="gateway">Passerelle de règlement (optionnelle)</label>
+  <input id="gateway" placeholder="https://…  (vide = ce site)">
+  <div class="row" style="margin-top:14px">
+    <button id="exportKey">Exporter la clé</button>
+    <button id="importKey">Importer une clé</button>
+  </div>
+  <h2>Envoyés</h2>
+  <div id="sent"><p class="muted">Rien pour l'instant.</p></div>
+</section>
+
+<nav><div role="tablist">
+  <button role="tab" data-tab="pay" aria-selected="true">Payer</button>
+  <button role="tab" data-tab="receive" aria-selected="false">Recevoir</button>
+  <button role="tab" data-tab="wallet" aria-selected="false">Wallet</button>
+</div></nav>
+<div class="toast" id="toast"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
