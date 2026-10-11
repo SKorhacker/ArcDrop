@@ -3,6 +3,8 @@
 //   arcmesh-node [gateway-url]          then paste packets on stdin to broadcast them
 import Foundation
 
+setvbuf(stdout, nil, _IOLBF, 0) // line-buffered even when piped to a log
+
 final class Node: ArcMeshDelegate {
     let mesh = ArcMesh()
     init() { mesh.delegate = self }
@@ -22,7 +24,9 @@ print("ArcDrop mesh node started. Paste an arcdrop:1:… packet and press enter 
 
 let stdin = FileHandle.standardInput
 stdin.readabilityHandler = { handle in
-    guard let line = String(data: handle.availableData, encoding: .utf8), !line.isEmpty else { return }
+    let data = handle.availableData
+    guard !data.isEmpty else { handle.readabilityHandler = nil; return } // stdin closed
+    guard let line = String(data: data, encoding: .utf8) else { return }
     for text in line.split(separator: "\n") where text.contains("arcdrop:1:") {
         node.mesh.broadcast(String(text))
         ArcDropRelay.shared.observe(String(text))
