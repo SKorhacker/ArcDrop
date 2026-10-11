@@ -74,18 +74,22 @@ function rateLimited({ ip, payer }) {
   return null
 }
 
-// Anti-loop: money the gateway just delivered to a wallet is not re-sponsored from that wallet
-// for an hour (A→B→A or W1→W2→… would otherwise recycle the same cents through our gas).
-const recentlyFunded = new Map()
+// Anti ping-pong: if the gateway just paid gas for A→B, it won't sponsor B→A for an hour
+// (two wallets bouncing the same cents through our gas). Receiving then paying someone
+// else stays free, which is the normal life of a wallet. Longer cycles are bounded by the
+// per-wallet and global limits above.
+const recentPairs = new Map()
 const RECYCLE_MS = 3_600_000
-function justReceived(addr) {
-  const t = recentlyFunded.get(addr)
+const pairKey = (from, to) => `${from}>${to}`
+function pingPong(from, to) {
+  const t = recentPairs.get(pairKey(to, from))
   return t !== undefined && Date.now() - t < RECYCLE_MS
 }
-function markReceived(addr) {
-  recentlyFunded.delete(addr)
-  recentlyFunded.set(addr, Date.now())
-  while (recentlyFunded.size > 50_000) recentlyFunded.delete(recentlyFunded.keys().next().value)
+function markPair(from, to) {
+  const k = pairKey(from, to)
+  recentPairs.delete(k)
+  recentPairs.set(k, Date.now())
+  while (recentPairs.size > 50_000) recentPairs.delete(recentPairs.keys().next().value)
 }
 
 export const _rateLimitedForTests = rateLimited
@@ -110,7 +114,7 @@ export async function relay(text, { ip } = {}) {
   // Free money-go-round: paying yourself would let anyone burn our gas.
   if (relayer && p.from === p.to) return fail(400, 'payer and recipient are the same')
   if (!p.tab && p.validBefore > BigInt(Math.floor(Date.now() / 1000) + PAYMENT_TTL + 86_400)) return fail(400, 'expiry too far in the future')
-  if (relayer && !p.tab && justReceived(p.from)) return fail(429, 'this wallet just received a sponsored payment; settle it yourself or retry in an hour')
+  if (relayer && !p.tab && pingPong(p.from, p.to)) return fail(429, 'paying back the wallet that just paid you: settle it yourself or retry in an hour')
   if (relayer && !p.tab && p.value < MIN_VALUE) return fail(400, `minimum ${formatUsdc(MIN_VALUE)} ${symbol(p.token)}`)
 
   let status
@@ -140,7 +144,7 @@ export async function relay(text, { ip } = {}) {
     const job = serial(async () => {
       await simulatePayment(p, { rpcUrl: RPC_URL, relayer: relayer.address }) // reverts cost nothing here
       return settlePayment(p, { relayerAccount: relayer, rpcUrl: RPC_URL })
-    }).then((r) => { if (!p.tab) markReceived(p.to); return { ...r, settleMs: Date.now() - started } })
+    }).then((r) => { if (!p.tab) markPair(p.from, p.to); return { ...r, settleMs: Date.now() - started } })
     inflight.set(key, job)
     // Keep successes briefly for duplicates; forget failures at once so honest retries work.
     job.then(() => setTimeout(() => inflight.delete(key), 60_000).unref(), () => inflight.delete(key))
@@ -172,7 +176,7 @@ export async function fund(f, { ip } = {}) {
   const tab = { chainId, token, from: getAddress(f.from), recipient: getAddress(f.recipient), expiry: String(f.expiry), salt: f.salt,
     value: String(f.value), validAfter: String(f.validAfter), validBefore: String(f.validBefore), signature: f.signature }
   if (tab.from === tab.recipient) return fail(400, 'cannot open a tab to yourself')
-  if (relayer && justReceived(tab.from)) return fail(429, 'this wallet just received a sponsored payment; retry in an hour')
+  if (relayer && pingPong(tab.from, tab.recipient)) return fail(429, 'paying back the wallet that just paid you: retry in an hour')
 
   let call
   try { call = fundCall(tab) } catch { return fail(400, 'invalid tab') }
