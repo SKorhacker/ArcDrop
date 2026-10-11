@@ -518,7 +518,7 @@ $('signBtn').onclick = async () => {
   }
   const packet = encodePayment(p)
   // In the app, AirDrop an arcdrop:// link so the receiver's app opens it directly.
-  lastPayment = { p, packet, amount: value, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${BUNDLED ? '/' : location.pathname}`) }
+  lastPayment = { p, packet, amount: value, link: paymentLink(p, mesh && !globalThis.ArcMeshAndroid ? 'arcdrop://pay' : `${webOrigin}${BUNDLED ? '/' : location.pathname}`) }
   const sent = acct.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label, amount: value.toString() })
   if (!acct.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')

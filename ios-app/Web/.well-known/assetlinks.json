@@ -1,0 +1,4 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": { "namespace": "android_app", "package_name": "app.arcdrop.android", "sha256_cert_fingerprints": ["2F:EE:16:E8:C0:4B:6F:14:E9:14:8A:F5:28:45:FB:24:A2:B6:EB:EB:E8:5A:9F:40:49:4A:41:15:FE:61:03:DA"] }
+}]

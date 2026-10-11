@@ -141,7 +141,7 @@ class MainActivity : Activity(), ArcMesh.Listener {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val url = intent?.data?.takeIf { it.scheme == "arcdrop" }?.toString() ?: return
+        val url = intent?.data?.takeIf { it.scheme == "arcdrop" || (it.scheme == "https" && it.host == "arcdrop-pink.vercel.app") }?.toString() ?: return
         if (loaded) call("arcdropOpenURL", url) else if (pendingUrls.size < 10) pendingUrls.add(url)
     }
 
