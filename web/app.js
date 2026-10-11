@@ -54,7 +54,8 @@ async function refreshBalance() {
   if (!online) return
   try {
     const b = await publicClient(chainId).readContract({ address: USDC, abi: USDC_ABI, functionName: 'balanceOf', args: [account.address] })
-    $('balance').textContent = `${formatUsdc(b)} USDC`
+    // Gas leaves dust like 0.497821: show cents, rounded down so we never overstate.
+    $('balance').textContent = `${formatUsdc(b - (b % 10_000n))} USDC`
     store.set('lastBalance', { chainId, value: b.toString(), at: Date.now() })
   } catch { /* offline or RPC hiccup; keep last value */ }
 }
@@ -109,7 +110,7 @@ $('signBtn').onclick = async () => {
   sent.unshift({ packet, at: Date.now(), status: 'pending' })
   store.set('sent', sent)
   $('outAmount').textContent = `${formatUsdc(p.value)} USDC`
-  $('outTo').textContent = `→ ${p.to}`
+  $('outTo').textContent = `à ${p.to}`
   await qrInto($('outQr'), lastPayment.link)
   $('payOut').hidden = false
   $('payOut').scrollIntoView({ behavior: 'smooth' })
@@ -130,13 +131,16 @@ $('tShare').onclick = async () => {
   }
 }
 
-// Bitchat: the packet is plain text, so it rides the Bluetooth mesh as a normal message.
-$('tMesh').onclick = async () => {
+// Bluetooth mesh: only the native iOS app can use Bluetooth; it injects `webkit.messageHandlers.arcmesh`.
+const mesh = globalThis.webkit?.messageHandlers?.arcmesh
+$('tMesh').onclick = () => {
   if (!lastPayment) return
-  const amount = formatUsdc(lastPayment.p.value)
-  await copy(`💸 ${amount} USDC → ${short(lastPayment.p.to)} (ArcDrop)\n${lastPayment.packet}`)
-  toast('Copié : colle-le dans bitchat')
+  if (!mesh) return toast("Le Bluetooth arrive avec l'app iOS. Ici : QR ou AirDrop.")
+  mesh.postMessage({ type: 'broadcast', packet: lastPayment.packet })
+  toast('Diffusé en Bluetooth aux appareils proches')
 }
+// Called by the iOS app when a packet arrives over the mesh.
+globalThis.arcdropReceive = (text) => importPacket(text, 'Bluetooth')
 
 async function copy(text) {
   try { await navigator.clipboard.writeText(text) } catch {
@@ -157,14 +161,19 @@ async function importPacket(text, via) {
   inbox.unshift({ packet: raw, via, at: Date.now(), status: 'pending' })
   store.set('inbox', inbox)
   const mine = p.to === account.address
-  toast(`${formatUsdc(p.value)} USDC reçus via ${via}${mine ? '' : ' (pour un autre : tu le relaies)'} · signature vérifiée hors ligne`)
+  toast(mine ? `${formatUsdc(p.value)} USDC reçus par ${via} · signature vérifiée` : `Paiement pour un autre appareil : tu le relaies vers Arc`)
   renderInbox(); tab('receive')
   if (online) settleAll()
 }
 
-$('importBtn').onclick = () => { importPacket($('pasteBox').value, /bitchat|💸/i.test($('pasteBox').value) ? 'bitchat' : 'collé'); $('pasteBox').value = '' }
+$('importBtn').onclick = () => { importPacket($('pasteBox').value, 'copier-coller'); $('pasteBox').value = '' }
+// The amount field grows with its content so "USDC" stays right next to the number.
+const fitAmount = () => { const el = $('payAmount'); el.style.width = `${Math.max(1, (el.value || el.placeholder).length) + 0.2}ch` }
+$('payAmount').addEventListener('input', fitAmount)
+fitAmount()
+for (const b of document.querySelectorAll('[data-amount]')) b.onclick = () => { $('payAmount').value = b.dataset.amount; fitAmount(); $('payTo').focus() }
 $('pastePay').onclick = async () => {
-  try { const t = await navigator.clipboard.readText(); importPacket(t, /💸/.test(t) ? 'bitchat' : 'collé') } catch { $('pasteBox').focus() }
+  try { importPacket(await navigator.clipboard.readText(), 'copier-coller') } catch { $('pasteBox').focus() }
 }
 
 // AirDrop / any link opens the app with #p=…
@@ -172,7 +181,7 @@ function handleHash() {
   if (location.hash.includes('arcdrop:1:')) {
     const h = location.hash
     history.replaceState(null, '', location.pathname)
-    importPacket(h, 'AirDrop / lien')
+    importPacket(h, 'AirDrop')
   }
 }
 addEventListener('hashchange', handleHash)
@@ -204,7 +213,7 @@ function stopScan() {
   if (scanning) scanning.stream.getTracks().forEach((t) => t.stop())
   scanning = null; $('video').hidden = true
 }
-$('scanPay').onclick = () => scan((t) => importPacket(t, 'QR'))
+$('scanPay').onclick = () => scan((t) => importPacket(t, 'QR code'))
 $('scanTo').onclick = () => { tab('receive'); scan((t) => {
   const m = t.match(/0x[0-9a-fA-F]{40}/)
   tab('pay')
@@ -265,13 +274,18 @@ async function refreshSent() {
 // ---------- render ----------
 const LABEL = { pending: 'en attente', settled: 'réglé sur Arc', failed: 'échec' }
 
+const ICON_IN = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>'
+const ICON_OUT = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>'
+const ICON_RELAY = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg>'
+const EMPTY = '<div class="empty">Rien pour l\'instant.</div>'
+
 function steps(item) {
   const s = item.status
   return `<ol class="steps">
     <li class="done">Signé hors ligne par le payeur</li>
-    <li class="done">Reçu via ${item.via ?? '—'} · signature vérifiée</li>
+    <li class="done">Reçu par ${item.via ?? '—'} · signature vérifiée</li>
     <li class="${s === 'settled' ? 'done' : s === 'failed' ? 'fail' : ''}">Réglé sur Arc${item.ms ? ` en ${(item.ms / 1000).toFixed(2)} s` : ''}${item.tx ? ` · <a href="${item.tx}" target="_blank" rel="noopener">voir la tx</a>` : ''}</li>
-  </ol>${item.note ? `<div class="muted">${item.note}</div>` : ''}`
+  </ol>${item.note ? `<div class="note">${item.note}</div>` : ''}`
 }
 
 function renderInbox() {
@@ -280,10 +294,12 @@ function renderInbox() {
     const p = tryDecode(item.packet)
     if (!p) return ''
     const mine = p.to === account.address
-    return `<div class="card"><div class="item"><div><div class="big">${formatUsdc(p.value)} USDC</div>
-      <div class="addr">${mine ? 'de' : 'relais'} ${short(p.from)}${mine ? '' : ` → ${short(p.to)}`}</div></div>
-      <span class="tag ${item.status}">${LABEL[item.status]}</span></div>${steps(item)}</div>`
-  }).join('') : '<p class="muted">Rien pour l\'instant.</p>'
+    // A payment for someone else is only carried by this device: never show it as income.
+    return `<div class="tx"><div class="tx-top"><span class="tx-ic ${mine ? '' : 'relay'}">${mine ? ICON_IN : ICON_RELAY}</span>
+      <div class="tx-main"><div class="tx-amt">${mine ? '+' : ''}${formatUsdc(p.value)} USDC</div>
+      <div class="tx-sub">${mine ? `de ${short(p.from)}` : `relayé : ${short(p.from)} → ${short(p.to)}`}</div></div>
+      <span class="pill ${item.status}">${LABEL[item.status]}</span></div>${steps(item)}</div>`
+  }).join('') : EMPTY
 }
 
 function renderSent() {
@@ -291,15 +307,18 @@ function renderSent() {
   $('sent').innerHTML = sent.length ? sent.map((s) => {
     const p = tryDecode(s.packet)
     if (!p) return ''
-    return `<div class="card item"><div><div>${formatUsdc(p.value)} USDC → ${short(p.to)}</div>
-      <div class="muted">${new Date(s.at).toLocaleString('fr-FR')}</div></div><span class="tag ${s.status}">${LABEL[s.status]}</span></div>`
-  }).join('') : '<p class="muted">Rien pour l\'instant.</p>'
+    return `<div class="tx"><div class="tx-top"><span class="tx-ic out">${ICON_OUT}</span>
+      <div class="tx-main"><div class="tx-amt">−${formatUsdc(p.value)} USDC</div>
+      <div class="tx-sub">à ${short(p.to)} · ${new Date(s.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</div></div>
+      <span class="pill ${s.status}">${LABEL[s.status]}</span></div></div>`
+  }).join('') : EMPTY
 }
 
 // ---------- tabs & settings ----------
 function tab(name) {
   for (const b of document.querySelectorAll('nav button')) b.setAttribute('aria-selected', String(b.dataset.tab === name))
   for (const s of document.querySelectorAll('section')) s.hidden = s.id !== `tab-${name}`
+  scrollTo({ top: 0 })
   if (name !== 'receive') stopScan()
 }
 for (const b of document.querySelectorAll('nav button')) b.onclick = () => tab(b.dataset.tab)
