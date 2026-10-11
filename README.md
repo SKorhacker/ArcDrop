@@ -51,9 +51,15 @@ mesh/build/arcmesh-node https://arcdrop-pink.vercel.app
 cd ios-app && xcodegen generate && open ArcDrop.xcodeproj   # set your team, run on device
 ```
 
-## Offline vault (experimental, no guarantee)
+## Tabs: guaranteed offline payments
 
-`contracts/ArcDropVault.sol` (Arc testnet only, address in `core/vault.json`) lets a payer lock funds and pay with EIP-712 vouchers (`arcdrop:3:…`). The security review showed it does **not** guarantee recipients: a payer can redeem a voucher to their own second wallet and empty it at once. It is kept as a prototype; ArcDrop makes no guarantee claim for it.
+A plain offline payment is a promise: the payer's balance can only be checked online. A **tab** (`contracts/ArcDropTabs.sol`, Arc testnet, address in `core/tabs.json`) turns it into a guarantee for one recipient:
+
+- online, once, the payer locks funds **for one address** until an expiry (EIP-3009 `receiveWithAuthorization`; its nonce commits to the recipient and expiry, so the signature cannot be redirected);
+- offline, each payment is an EIP-712 voucher with the **running total** owed (`arcdrop:4:…`); the recipient redeems the latest one, the contract pays the difference;
+- locked funds can only go to that recipient before expiry: no early withdrawal, no redirect, no "pay my other wallet". Older vouchers are harmless, closed tabs bump an epoch so their vouchers are dead, and a voucher above the locked amount pays exactly what is locked.
+
+The recipient's app learns, while online, which tabs exist for it (on-chain index), so offline it shows "🔒 guaranteed" only for vouchers its cached tab covers. `scripts/tabs-e2e.mjs` runs everything live, including the attacks.
 
 ## Security review
 
@@ -62,8 +68,9 @@ The project was attacked by three independent AI reviewers (contract, gateway/co
 - `npm test`: offline + live checks, including `test/attacks.test.mjs` (alternate encodings, malleable signatures, postdated payments, overflow, receipt forgery, hostile requests) and `test/gateway.test.mjs` (self-payment gas drain, dust, malformed input, rate limits, CORS, path traversal, oversized bodies).
 - `mesh/check`: Bluetooth framing plus hostile-device tests (20 000-fragment flood, cross-device frame injection, junk payments).
 - `scripts/attack-e2e.mjs`: live burnt-nonce attack on testnet; ArcDrop reports the payment as NOT paid, because "settled" requires an on-chain transfer of exactly that amount to exactly that recipient.
+- `scripts/tabs-e2e.mjs`: live tab attacks (redirected funding, self-redeem, early close, replay, forged amount, wrong epoch, overspend).
 
-Known limits: offline, a payment is a promise (the payer's balance can only be checked online); gateway rate limits are per instance.
+Known limits: outside a tab, an offline payment is a promise (the payer's balance can only be checked online); tab guarantees require the recipient to redeem before the tab expires (the app does it as soon as it is online); gateway rate limits are per instance.
 
 ## Run it
 

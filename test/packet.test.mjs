@@ -91,18 +91,21 @@ console.log('status check ok', status)
   console.log('receipts + payment requests ok')
 }
 
-// ---------- vault vouchers (v3 packets) ----------
+// ---------- tab vouchers (v4 packets) ----------
 {
-  const { createPayment, encodePayment, decodePayment, verifyPayment } = await import('../core/arcdrop.js')
-  const v = await createPayment({ account: payer, to: payee.address, amount: '0.7', chainId: 5042002, vault: true })
+  const { createTabPayment, encodePayment, decodePayment, verifyPayment } = await import('../core/arcdrop.js')
+  const v = await createTabPayment({ account: payer, to: payee.address, cumulative: 700_000n, epoch: 0, chainId: 5042002 })
   const text = encodePayment(v)
-  assert.ok(text.startsWith('arcdrop:3:'))
+  assert.ok(text.startsWith('arcdrop:4:'))
   const back = decodePayment(`relay: ${text}`)
-  assert.equal(back.vault, true)
-  assert.equal(back.value, 700_000n)
+  assert.equal(back.tab, true)
+  assert.equal(back.cumulative, 700_000n)
+  assert.equal(back.nonce, v.nonce)
   assert.deepEqual(await verifyPayment(back), { ok: true })
-  assert.equal((await verifyPayment({ ...back, to: payer.address })).reason, 'bad signature')
-  // a voucher cannot be replayed as a plain EIP-3009 payment
-  assert.equal((await verifyPayment({ ...back, vault: false })).reason, 'bad signature')
-  console.log('vault voucher: encode/decode/verify ok (live redeem: scripts/vault-e2e.mjs)')
+  assert.equal((await verifyPayment({ ...back, to: payer.address })).ok, false)
+  assert.equal((await verifyPayment({ ...back, cumulative: 9_000_000n })).reason, 'bad signature')
+  assert.equal((await verifyPayment({ ...back, epoch: 1 })).reason, 'bad signature')
+  // a tab voucher cannot be replayed as a plain EIP-3009 payment
+  assert.equal((await verifyPayment({ ...back, tab: false })).ok, false)
+  console.log('tab voucher: encode/decode/verify ok (live: scripts/tabs-e2e.mjs)')
 }

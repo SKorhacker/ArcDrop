@@ -6,7 +6,7 @@
 //
 // Without RELAYER_PRIVATE_KEY it only verifies and simulates.
 //
-// The gas wallet is the asset to protect: every relay/deposit costs it a fraction
+// The gas wallet is the asset to protect: every relay/funding costs it a fraction
 // of a cent, so it refuses self-payments, dust, malformed input and floods, and it
 // simulates every call (free) before sending anything.
 
@@ -18,7 +18,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { createWalletClient, http as viemHttp, nonceManager, isAddress, getAddress } from 'viem'
 import {
   decodePayment, verifyPayment, checkPayment, simulatePayment, settlePayment, formatUsdc, symbol,
-  depositCall, publicClient, CHAINS, vaultAddress,
+  fundCall, publicClient, CHAINS, tabsAddress,
 } from '../core/arcdrop.js'
 
 const PORT = Number(process.env.PORT ?? 8787)
@@ -72,16 +72,20 @@ export async function relay(text, { ip } = {}) {
   try { p = decodePayment(text) } catch { return fail(400, 'invalid packet') }
   const check = await verifyPayment(p)
   if (!check.ok) return fail(400, check.reason)
-  if (relayer) {
-    // Free money-go-round: paying yourself (or dust) would let anyone burn our gas.
-    if (p.from === p.to) return fail(400, 'payer and recipient are the same')
-    if (p.value < MIN_VALUE) return fail(400, `minimum ${formatUsdc(MIN_VALUE)} ${symbol(p.token)}`)
-  }
+  // Free money-go-round: paying yourself would let anyone burn our gas.
+  if (relayer && p.from === p.to) return fail(400, 'payer and recipient are the same')
+  if (relayer && !p.tab && p.value < MIN_VALUE) return fail(400, `minimum ${formatUsdc(MIN_VALUE)} ${symbol(p.token)}`)
 
   let status
   try { status = await checkPayment(p, { rpcUrl: RPC_URL }) } catch { return fail(503, 'Arc RPC unavailable') }
   if (status.settled) return { code: 200, body: { ok: true, alreadySettled: true } }
-  if (!status.funded) return fail(402, `payer has ${formatUsdc(status.payerBalance)} ${symbol(p.token)}, needs ${formatUsdc(p.value)}`)
+  if (p.tab) {
+    // Tabs pay the difference with what was already paid: refuse dust redemptions too.
+    const t = status.tab
+    const owed = (BigInt(p.cumulative) < t.locked ? BigInt(p.cumulative) : t.locked) - t.paid
+    if (!status.funded) return fail(402, 'tab expired, closed or empty')
+    if (relayer && owed < MIN_VALUE) return fail(400, `minimum ${formatUsdc(MIN_VALUE)} ${symbol(p.token)}`)
+  } else if (!status.funded) return fail(402, `payer has ${formatUsdc(status.payerBalance)} ${symbol(p.token)}, needs ${formatUsdc(p.value)}`)
 
   if (!relayer) {
     try { await simulatePayment(p, { rpcUrl: RPC_URL }) } catch { return fail(422, 'payment would fail on Arc') }
@@ -89,7 +93,7 @@ export async function relay(text, { ip } = {}) {
   }
 
   // The same packet often arrives through several mesh paths at once.
-  const key = `${p.vault ? 'v' : 'a'}:${p.from}:${p.nonce}`
+  const key = `${p.tab ? 't' : 'a'}:${p.from}:${p.nonce}`
   if (!inflight.has(key)) {
     const limited = rateLimited({ ip, payer: p.from })
     if (limited) return fail(429, limited)
@@ -116,30 +120,31 @@ const DIGITS = /^\d{1,30}$/
 const HEX32 = /^0x[0-9a-fA-F]{64}$/
 const SIG = /^0x[0-9a-fA-F]{130}$/
 
-// Locks funds in the offline vault from the owner's EIP-3009 signature; the gateway pays the gas.
-export async function deposit(d, { ip } = {}) {
-  if (!d || typeof d !== 'object') return fail(400, 'invalid deposit')
-  const chainId = Number(d.chainId), token = Number(d.token ?? 0)
-  if (!Number.isSafeInteger(chainId) || !vaultAddress(chainId) || ![0, 1].includes(token)) return fail(400, 'no vault for this chain or token')
-  if (![d.value, d.validAfter, d.validBefore].every((x) => DIGITS.test(String(x))) || !isAddress(String(d.from))
-    || !HEX32.test(String(d.nonce)) || !SIG.test(String(d.signature))) return fail(400, 'invalid deposit')
-  const dep = { chainId, token, from: getAddress(d.from), value: String(d.value), validAfter: String(d.validAfter), validBefore: String(d.validBefore), nonce: d.nonce, signature: d.signature }
-  if (BigInt(dep.value) < MIN_VALUE) return fail(400, `minimum ${formatUsdc(MIN_VALUE)} ${symbol(token)}`)
+// Opens or tops up a tab from the payer's EIP-3009 signature; the gateway pays the gas.
+export async function fund(f, { ip } = {}) {
+  if (!f || typeof f !== 'object') return fail(400, 'invalid tab')
+  const chainId = Number(f.chainId), token = Number(f.token ?? 0)
+  if (!Number.isSafeInteger(chainId) || !tabsAddress(chainId) || ![0, 1].includes(token)) return fail(400, 'no tabs for this chain or token')
+  if (![f.value, f.validAfter, f.validBefore, f.expiry].every((x) => DIGITS.test(String(x))) || !isAddress(String(f.from)) || !isAddress(String(f.recipient))
+    || !HEX32.test(String(f.salt)) || !SIG.test(String(f.signature))) return fail(400, 'invalid tab')
+  const tab = { chainId, token, from: getAddress(f.from), recipient: getAddress(f.recipient), expiry: String(f.expiry), salt: f.salt,
+    value: String(f.value), validAfter: String(f.validAfter), validBefore: String(f.validBefore), signature: f.signature }
+  if (tab.from === tab.recipient) return fail(400, 'cannot open a tab to yourself')
 
   let call
-  try { call = depositCall(dep) } catch { return fail(400, 'invalid deposit') }
+  try { call = fundCall(tab) } catch { return fail(400, 'invalid tab') }
   const client = publicClient(chainId, RPC_URL)
   if (!relayer) {
-    try { await client.simulateContract({ ...call, account: dep.from }) } catch { return fail(422, 'deposit would fail on Arc') }
+    try { await client.simulateContract({ ...call, account: tab.from }) } catch { return fail(422, 'tab would fail on Arc') }
     return { code: 200, body: { ok: true, simulated: true } }
   }
-  const key = `d:${dep.from}:${dep.nonce}`
+  const key = `f:${tab.from}:${tab.salt}`
   if (!inflight.has(key)) {
-    const limited = rateLimited({ ip, payer: dep.from })
+    const limited = rateLimited({ ip, payer: tab.from })
     if (limited) return fail(429, limited)
     const wallet = createWalletClient({ account: relayer, chain: CHAINS[chainId], transport: viemHttp(RPC_URL) })
     const job = serial(async () => {
-      await client.simulateContract({ ...call, account: relayer }) // bad signature or no funds: fails here, for free
+      await client.simulateContract({ ...call, account: relayer }) // bad signature, no funds, bad duration: fails here, for free
       const hash = await wallet.writeContract(call)
       const receipt = await client.waitForTransactionReceipt({ hash, pollingInterval: 150 })
       return { hash, status: receipt.status }
@@ -150,7 +155,7 @@ export async function deposit(d, { ip } = {}) {
   try {
     const r = await inflight.get(key)
     return { code: 200, body: { ok: r.status === 'success', hash: r.hash, url: `${CHAINS[chainId].blockExplorers.default.url}/tx/${r.hash}` } }
-  } catch { return fail(422, 'deposit would fail on Arc') }
+  } catch { return fail(422, 'tab would fail on Arc') }
 }
 
 // ---------- local HTTP server ----------
@@ -179,8 +184,8 @@ const server = http.createServer(async (req, res) => {
       const { code, body: out } = await relay((await body(req))?.packet, { ip })
       return json(res, code, out, origin)
     }
-    if (req.method === 'POST' && req.url === '/api/deposit') {
-      const { code, body: out } = await deposit((await body(req))?.deposit, { ip })
+    if (req.method === 'POST' && req.url === '/api/fund') {
+      const { code, body: out } = await fund((await body(req))?.tab, { ip })
       return json(res, code, out, origin)
     }
     if (req.method === 'GET' && req.url === '/api/info') return json(res, 200, { relayer: relayer?.address ?? null }, origin)

@@ -6,7 +6,7 @@
 // no network.
 //
 // Messages (envelope = type u8 | body):
-//   1 payment  signed USDC/EURC authorization (157/158 bytes) or vault voucher (154), flooded
+//   1 payment  signed USDC/EURC authorization (157/158 bytes) or tab voucher (122), flooded
 //   2 hello    "I'm here": wallet address 20 | display name (UTF-8), neighbors only
 //   3 receipt  recipient's signature over the payment nonce (97 bytes), flooded
 //
@@ -125,7 +125,7 @@ public final class ArcMesh: NSObject {
     // MARK: Text <-> envelope (same encodings as core/arcdrop.js)
 
     static func envelope(from text: String) -> Data? {
-        for (prefix, kind, lengths) in [("arcdrop:3:", Kind.payment, [154]), ("arcdrop:2:", .payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:2:", .receipt, [97])] {
+        for (prefix, kind, lengths) in [("arcdrop:4:", Kind.payment, [122]), ("arcdrop:2:", .payment, [158]), ("arcdrop:1:", .payment, [157]), ("arcdrop-ack:2:", .receipt, [97])] {
             guard let range = text.range(of: prefix) else { continue }
             let body = text[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
             guard let data = Data(base64URL: String(body)), lengths.contains(data.count) else { return nil }
@@ -140,7 +140,7 @@ public final class ArcMesh: NSObject {
         switch (kind, body.count) {
         case (.payment, 157): return "arcdrop:1:" + body.base64URL
         case (.payment, 158): return "arcdrop:2:" + body.base64URL
-        case (.payment, 154): return "arcdrop:3:" + body.base64URL
+        case (.payment, 122): return "arcdrop:4:" + body.base64URL
         case (.receipt, 97): return "arcdrop-ack:2:" + body.base64URL
         default: return nil
         }
@@ -174,8 +174,8 @@ public final class ArcMesh: NSObject {
         case 157, 158: // v1 / v2: [token] chainId from to value validAfter validBefore nonce sig
             let o = bytes.count - 1 == 158 ? 2 : 1
             return knownChains.contains(UInt32(u(o, 4))) && u(o + 44, 8) > 0 && u(o + 52, 4) <= t && u(o + 56, 4) > t
-        case 154: // v3: token chainId from to value validBefore nonce sig
-            return knownChains.contains(UInt32(u(2, 4))) && u(46, 8) > 0 && u(54, 4) > t
+        case 122: // v4 tab voucher: token chainId from to epoch cumulative sig (expiry lives on-chain)
+            return knownChains.contains(UInt32(u(2, 4))) && u(50, 8) > 0
         default: return false
         }
     }

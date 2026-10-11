@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 process.env.RELAYER_PRIVATE_KEY = generatePrivateKey()
-const { relay, deposit, corsHeaders, _rateLimitedForTests: limit } = await import('../relayer/server.mjs')
+const { relay, fund, corsHeaders, _rateLimitedForTests: limit } = await import('../relayer/server.mjs')
 const { createPayment, encodePayment } = await import('../core/arcdrop.js')
 
 const a = privateKeyToAccount(generatePrivateKey()), b = privateKeyToAccount(generatePrivateKey())
@@ -22,10 +22,10 @@ for (const bad of [undefined, null, 42, {}, 'x'.repeat(5000), 'arcdrop:1:' + 'A'
 }
 for (const bad of [null, 'x', {}, { chainId: '__proto__' }, { chainId: 5042002, value: '1e9' },
   { chainId: 5042002, token: 'toString', value: '1' }, { chainId: 5042002, from: 'nope', value: '20000', validAfter: '0', validBefore: '1', nonce: '0x00', signature: '0x00' }]) {
-  const r = await deposit(bad)
+  const r = await fund(bad)
   assert.equal(r.code, 400); assert.doesNotMatch(r.body.error, /Cannot|undefined|BigInt|TypeError/)
 }
-console.log('✓ malformed relay / deposit input refused with neutral errors')
+console.log('✓ malformed relay / tab-funding input refused with neutral errors')
 
 // rate limits: per wallet and per IP
 const w = privateKeyToAccount(generatePrivateKey()).address

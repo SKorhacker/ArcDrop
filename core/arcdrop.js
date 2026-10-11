@@ -1,11 +1,14 @@
-// ArcDrop core: an offline payment is an EIP-3009 `transferWithAuthorization`
-// (USDC or EURC) signed by the payer. It needs no network to create, any device can carry it
-// (QR, AirDrop, Bluetooth mesh), and anyone online can submit it to Arc.
-// The recipient is part of the signature, so whoever relays it cannot redirect funds.
+// ArcDrop core. An offline payment is either
+//   - an EIP-3009 `transferWithAuthorization` (USDC or EURC) signed by the payer: a promise
+//     backed by the payer's balance, which only Arc can check; or
+//   - a tab voucher (contracts/ArcDropTabs.sol): funds locked online for ONE recipient,
+//     so payments to them are guaranteed up to the locked amount.
+// Both need no network to create, travel by QR / AirDrop / Bluetooth, and anyone online can
+// submit them. The recipient is part of every signature, so a relay cannot redirect funds.
 
-import VAULTS from './vault.json' with { type: 'json' }
+import TABS from './tabs.json' with { type: 'json' }
 import {
-  createPublicClient, createWalletClient, http, defineChain,
+  createPublicClient, createWalletClient, http, defineChain, keccak256, encodeAbiParameters, encodePacked,
   hexToBytes, bytesToHex, recoverTypedDataAddress, parseSignature, getAddress, parseEventLogs, parseAbiItem,
 } from 'viem'
 
@@ -48,33 +51,36 @@ export const symbol = (token = 0) => TOKENS[token]?.symbol ?? '?'
 
 export const PREFIX = 'arcdrop:1:'
 export const PREFIX_V2 = 'arcdrop:2:'
-export const PREFIX_V3 = 'arcdrop:3:' // voucher drawn on the ArcDropVault
+export const PREFIX_V4 = 'arcdrop:4:' // tab voucher (guaranteed)
 
-// Offline vault (contracts/ArcDropVault.sol): funds locked in advance, 24 h withdrawal notice.
-export const vaultAddress = (chainId) => (Object.hasOwn(VAULTS, String(chainId)) ? VAULTS[chainId] : null)
 const knownChain = (chainId) => Number.isSafeInteger(chainId) && Object.hasOwn(CHAINS, chainId)
 const knownToken = (token) => Number.isSafeInteger(token) && Object.hasOwn(TOKENS, token)
-const VOUCHER_TYPES = {
-  Voucher: [
+
+// ---------- tabs ----------
+export const tabsAddress = (chainId) => (Object.hasOwn(TABS, String(chainId)) ? TABS[chainId] : null)
+const TAB_TYPES = {
+  TabVoucher: [
     { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
-    { name: 'value', type: 'uint256' }, { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' },
+    { name: 'epoch', type: 'uint64' }, { name: 'cumulative', type: 'uint256' },
   ],
 }
-const vaultDomain = (chainId) => ({ name: 'ArcDropVault', version: '1', chainId, verifyingContract: vaultAddress(chainId) })
-export const VAULT_ABI = [
-  { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'voucherUsed', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'bytes32' }], outputs: [{ type: 'bool' }] },
-  { type: 'function', name: 'withdrawAmount', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'withdrawUnlocksAt', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }] },
+const tabsDomain = (chainId) => ({ name: 'ArcDropTabs', version: '1', chainId, verifyingContract: tabsAddress(chainId) })
+export const TABS_ABI = [
+  { type: 'function', name: 'tabs', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }, { type: 'address' }],
+    outputs: [{ name: 'locked', type: 'uint128' }, { name: 'paid', type: 'uint128' }, { name: 'expiry', type: 'uint64' }, { name: 'epoch', type: 'uint64' }] },
+  { type: 'function', name: 'payersOf', stateMutability: 'view', inputs: [{ type: 'address' }, { type: 'address' }, { type: 'uint256' }, { type: 'uint256' }],
+    outputs: [{ name: 'page', type: 'address[]' }, { name: 'total', type: 'uint256' }] },
+  { type: 'function', name: 'fund', stateMutability: 'nonpayable', inputs: [
+    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'expiry', type: 'uint256' }, { name: 'salt', type: 'bytes32' },
+    { name: 'value', type: 'uint256' }, { name: 'validAfter', type: 'uint256' }, { name: 'validBefore', type: 'uint256' },
+    { name: 'v', type: 'uint8' }, { name: 'r', type: 'bytes32' }, { name: 's', type: 'bytes32' }], outputs: [] },
   { type: 'function', name: 'redeem', stateMutability: 'nonpayable', inputs: [
-    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'value', type: 'uint256' },
-    { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'v', type: 'uint8' }, { name: 'r', type: 'bytes32' }, { name: 's', type: 'bytes32' }], outputs: [] },
-  { type: 'function', name: 'depositWithAuthorization', stateMutability: 'nonpayable', inputs: [
-    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'value', type: 'uint256' }, { name: 'validAfter', type: 'uint256' },
-    { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'v', type: 'uint8' }, { name: 'r', type: 'bytes32' }, { name: 's', type: 'bytes32' }], outputs: [] },
-  { type: 'function', name: 'requestWithdraw', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [] },
-  { type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [{ type: 'address' }], outputs: [] },
+    { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'cumulative', type: 'uint256' },
+    { name: 'v', type: 'uint8' }, { name: 'r', type: 'bytes32' }, { name: 's', type: 'bytes32' }], outputs: [] },
+  { type: 'function', name: 'close', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [] },
 ]
+// A tab voucher's identity (stands in for an EIP-3009 nonce: receipts, dedupe).
+const tabNonce = (p) => keccak256(encodePacked(['address', 'uint64', 'uint256'], [p.to, BigInt(p.epoch), BigInt(p.cumulative)]))
 
 const TYPES = {
   TransferWithAuthorization: [
@@ -133,18 +139,9 @@ function checkRanges({ value, validBefore, chainId }) {
   if (!knownChain(chainId)) throw new Error(`unknown chain ${chainId}`)
 }
 
-export async function createPayment({ account, to, amount, chainId = ARC_MAINNET.id, token = 0, vault = false, ttlSeconds = PAYMENT_TTL, now = Math.floor(Date.now() / 1000) }) {
+export async function createPayment({ account, to, amount, chainId = ARC_MAINNET.id, token = 0, ttlSeconds = PAYMENT_TTL, now = Math.floor(Date.now() / 1000) }) {
   tokenAddress(chainId, token)
   checkRanges({ value: typeof amount === 'bigint' ? amount : parseUsdc(amount), validBefore: now + ttlSeconds, chainId })
-  if (vault) {
-    if (!vaultAddress(chainId)) throw new Error(`no vault on chain ${chainId}`)
-    const v = {
-      token: tokenAddress(chainId, token), from: account.address, to: getAddress(to),
-      value: typeof amount === 'bigint' ? amount : parseUsdc(amount), validBefore: BigInt(now + ttlSeconds), nonce: randomNonce(),
-    }
-    const signature = await account.signTypedData({ domain: vaultDomain(chainId), types: VOUCHER_TYPES, primaryType: 'Voucher', message: v })
-    return { chainId, token, vault: true, from: v.from, to: v.to, value: v.value, validAfter: 0n, validBefore: v.validBefore, nonce: v.nonce, signature }
-  }
   const message = {
     from: account.address,
     to: getAddress(to),
@@ -157,21 +154,33 @@ export async function createPayment({ account, to, amount, chainId = ARC_MAINNET
   return { chainId, token, ...message, signature }
 }
 
+// A guaranteed payment on a tab: `cumulative` is the total owed to `to` on this tab so far
+// (previous cumulative + this payment). `epoch` is the tab's epoch read when it was opened.
+export async function createTabPayment({ account, to, cumulative, epoch, chainId, token = 0 }) {
+  if (!tabsAddress(chainId)) throw new Error(`no tabs on chain ${chainId}`)
+  checkRanges({ value: cumulative, validBefore: 0, chainId })
+  if (BigInt(epoch) < 0n || BigInt(epoch) >= BigInt(U32)) throw new Error('epoch out of range')
+  const message = { token: tokenAddress(chainId, token), from: account.address, to: getAddress(to), epoch: BigInt(epoch), cumulative: BigInt(cumulative) }
+  const signature = await account.signTypedData({ domain: tabsDomain(chainId), types: TAB_TYPES, primaryType: 'TabVoucher', message })
+  const p = { chainId, token, tab: true, from: message.from, to: message.to, epoch: Number(epoch), cumulative: message.cumulative, value: message.cumulative, validAfter: 0n, validBefore: BigInt(U32 - 1), signature }
+  return { ...p, nonce: tabNonce(p) }
+}
+
 // Compact binary layout so a payment fits a small QR code and a couple of BLE fragments.
 // v1 (USDC, 157 bytes): chainId u32 | from 20 | to 20 | value u64 | validAfter u32 | validBefore u32 | nonce 32 | sig 65
 // v2 (158 bytes):       token u8 | the v1 layout
-// v3 (vault voucher, 154 bytes): token u8 | chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65
+// v4 (tab voucher, 122 bytes): token u8 | chainId u32 | from 20 | to 20 | epoch u32 | cumulative u64 | sig 65
 export function encodePayment(p) {
   checkRanges(p)
-  if (p.vault) {
-    const buf = new Uint8Array(154)
+  if (p.tab) {
+    const buf = new Uint8Array(122)
     const dv = new DataView(buf.buffer)
     buf[0] = p.token ?? 0
     dv.setUint32(1, p.chainId)
     buf.set(hexToBytes(p.from), 5); buf.set(hexToBytes(p.to), 25)
-    dv.setBigUint64(45, BigInt(p.value)); dv.setUint32(53, Number(p.validBefore))
-    buf.set(hexToBytes(p.nonce), 57); buf.set(hexToBytes(p.signature), 89)
-    return PREFIX_V3 + toB64url(buf)
+    dv.setUint32(45, Number(p.epoch)); dv.setBigUint64(49, BigInt(p.cumulative))
+    buf.set(hexToBytes(p.signature), 57)
+    return PREFIX_V4 + toB64url(buf)
   }
   const v2 = (p.token ?? 0) !== 0
   const buf = new Uint8Array(v2 ? 158 : 157)
@@ -192,18 +201,20 @@ export function encodePayment(p) {
 export function decodePayment(text) {
   const raw = extractPacket(text)
   if (!raw) throw new Error('not an ArcDrop payment')
-  if (raw.startsWith(PREFIX_V3)) {
-    const buf = fromB64url(raw.slice(PREFIX_V3.length))
-    if (buf.length !== 154) throw new Error('corrupted payment')
+  if (raw.startsWith(PREFIX_V4)) {
+    const buf = fromB64url(raw.slice(PREFIX_V4.length))
+    if (buf.length !== 122) throw new Error('corrupted payment')
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
     const token = buf[0]
     if (!TOKENS[token]) throw new Error('unknown token')
-    return {
-      chainId: dv.getUint32(1), token, vault: true,
+    const cumulative = dv.getBigUint64(49)
+    const p = {
+      chainId: dv.getUint32(1), token, tab: true,
       from: getAddress(bytesToHex(buf.slice(5, 25))), to: getAddress(bytesToHex(buf.slice(25, 45))),
-      value: dv.getBigUint64(45), validAfter: 0n, validBefore: BigInt(dv.getUint32(53)),
-      nonce: bytesToHex(buf.slice(57, 89)), signature: canonicalSignature(buf.slice(89, 154)),
+      epoch: dv.getUint32(45), cumulative, value: cumulative, validAfter: 0n, validBefore: BigInt(U32 - 1),
+      signature: canonicalSignature(buf.slice(57, 122)),
     }
+    return { ...p, nonce: tabNonce(p) }
   }
   const v2 = raw.startsWith(PREFIX_V2)
   const buf = fromB64url(raw.slice(PREFIX.length))
@@ -228,7 +239,7 @@ export function decodePayment(text) {
 export function extractPacket(text) {
   let t = String(text)
   try { t = decodeURIComponent(t) } catch { /* not URI-encoded */ }
-  const m = t.match(/arcdrop:[123]:[A-Za-z0-9_-]{150,}/)
+  const m = t.match(/arcdrop:[12]:[A-Za-z0-9_-]{150,}|arcdrop:4:[A-Za-z0-9_-]{160,}/)
   return m ? m[0] : null
 }
 
@@ -241,13 +252,14 @@ export function paymentLink(p, base) {
 export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
   if (!knownChain(p.chainId)) return { ok: false, reason: `unknown chain ${p.chainId}` }
   if (!knownToken(p.token ?? 0)) return { ok: false, reason: 'unknown token' }
-  if (p.vault && !vaultAddress(p.chainId)) return { ok: false, reason: `no vault on chain ${p.chainId}` }
+  if (p.tab && !tabsAddress(p.chainId)) return { ok: false, reason: `no tabs on chain ${p.chainId}` }
   // A postdated payment would verify yet be unspendable until then.
   if (BigInt(p.validAfter ?? 0n) > BigInt(now)) return { ok: false, reason: 'not yet valid' }
-  const signer = p.vault
+  if (p.tab && p.from === p.to) return { ok: false, reason: 'bad signature' }
+  const signer = p.tab
     ? await recoverTypedDataAddress({
-      domain: vaultDomain(p.chainId), types: VOUCHER_TYPES, primaryType: 'Voucher',
-      message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, value: p.value, validBefore: p.validBefore, nonce: p.nonce },
+      domain: tabsDomain(p.chainId), types: TAB_TYPES, primaryType: 'TabVoucher',
+      message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, epoch: BigInt(p.epoch), cumulative: BigInt(p.cumulative) },
       signature: p.signature,
     })
     : await recoverTypedDataAddress({
@@ -270,29 +282,39 @@ function splitSig(signature) {
   return [Number(v ?? 27n + BigInt(yParity)), r, s]
 }
 
-// The contract call that settles a payment: USDC/EURC itself, or the vault for vouchers.
+// The contract call that settles a payment: USDC/EURC itself, or the tabs contract.
 function settleCall(p) {
-  if (p.vault) {
-    return { address: vaultAddress(p.chainId), abi: VAULT_ABI, functionName: 'redeem',
-      args: [tokenAddress(p.chainId, p.token), p.from, p.to, p.value, p.validBefore, p.nonce, ...splitSig(p.signature)] }
+  if (p.tab) {
+    return { address: tabsAddress(p.chainId), abi: TABS_ABI, functionName: 'redeem',
+      args: [tokenAddress(p.chainId, p.token), p.from, p.to, BigInt(p.cumulative), ...splitSig(p.signature)] }
   }
   return { address: tokenAddress(p.chainId, p.token), abi: USDC_ABI, functionName: 'transferWithAuthorization',
     args: [p.from, p.to, p.value, p.validAfter, p.validBefore, p.nonce, ...splitSig(p.signature)] }
 }
 
+export async function tabState(chainId, token, from, to, rpcUrl) {
+  const [locked, paid, expiry, epoch] = await publicClient(chainId, rpcUrl).readContract({
+    address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'tabs', args: [tokenAddress(chainId, token), from, to],
+  })
+  return { locked, paid, expiry: Number(expiry), epoch: Number(epoch) }
+}
+
 // Online status of a payment: already settled on Arc? payer still funded?
+// For a tab voucher, "settled" means the tab has paid out at least what this voucher covers,
+// which can only ever have gone to `to`.
 export async function checkPayment(p, { rpcUrl } = {}) {
+  if (p.tab) {
+    const t = await tabState(p.chainId, p.token, p.from, p.to, rpcUrl)
+    const covered = BigInt(p.cumulative) < t.locked ? BigInt(p.cumulative) : t.locked
+    const live = t.epoch === Number(p.epoch) && t.expiry > Math.floor(Date.now() / 1000)
+    return { settled: t.epoch === Number(p.epoch) && t.paid >= covered && covered > 0n, payerBalance: t.locked - t.paid, funded: live && covered > t.paid, tab: t }
+  }
   const client = publicClient(p.chainId, rpcUrl)
   const token = tokenAddress(p.chainId, p.token)
-  const [used, balance] = await Promise.all(p.vault
-    ? [
-      client.readContract({ address: vaultAddress(p.chainId), abi: VAULT_ABI, functionName: 'voucherUsed', args: [p.from, p.nonce] }),
-      client.readContract({ address: vaultAddress(p.chainId), abi: VAULT_ABI, functionName: 'balanceOf', args: [token, p.from] }),
-    ]
-    : [
-      client.readContract({ address: token, abi: USDC_ABI, functionName: 'authorizationState', args: [p.from, p.nonce] }),
-      client.readContract({ address: token, abi: USDC_ABI, functionName: 'balanceOf', args: [p.from] }),
-    ])
+  const [used, balance] = await Promise.all([
+    client.readContract({ address: token, abi: USDC_ABI, functionName: 'authorizationState', args: [p.from, p.nonce] }),
+    client.readContract({ address: token, abi: USDC_ABI, functionName: 'balanceOf', args: [p.from] }),
+  ])
   return { settled: used, payerBalance: balance, funded: balance >= p.value }
 }
 
@@ -320,17 +342,16 @@ export async function settlePayment(p, { relayerAccount, rpcUrl }) {
 // `to` under this nonce.
 const EV_AUTH_USED = parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)')
 const EV_TRANSFER = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')
-const EV_REDEEMED = parseAbiItem('event Redeemed(address indexed token, address indexed from, address indexed to, uint256 value, bytes32 nonce)')
+const EV_TAB_REDEEMED = parseAbiItem('event TabRedeemed(address indexed token, address indexed from, address indexed to, uint256 amount, uint256 cumulative)')
 const LOG_WINDOW = 9_999n // Arc RPC limit per eth_getLogs
 
 function receiptPays(receipt, p) {
   if (receipt.status !== 'success') return false
   const token = tokenAddress(p.chainId, p.token).toLowerCase()
-  if (p.vault) {
-    const vault = vaultAddress(p.chainId).toLowerCase()
-    return parseEventLogs({ abi: [EV_REDEEMED], logs: receipt.logs.filter((l) => l.address.toLowerCase() === vault) })
-      .some((e) => e.args.token.toLowerCase() === token && getAddress(e.args.from) === p.from && getAddress(e.args.to) === p.to
-        && e.args.value === p.value && e.args.nonce === p.nonce)
+  if (p.tab) {
+    const tabs = tabsAddress(p.chainId).toLowerCase()
+    return parseEventLogs({ abi: [EV_TAB_REDEEMED], logs: receipt.logs.filter((l) => l.address.toLowerCase() === tabs) })
+      .some((e) => e.args.token.toLowerCase() === token && getAddress(e.args.from) === p.from && getAddress(e.args.to) === p.to)
   }
   const tokenLogs = receipt.logs.filter((l) => l.address.toLowerCase() === token)
   const used = parseEventLogs({ abi: [EV_AUTH_USED], logs: tokenLogs }).some((e) => getAddress(e.args.authorizer) === p.from && e.args.nonce === p.nonce)
@@ -343,6 +364,16 @@ function receiptPays(receipt, p) {
 export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl } = {}) {
   const client = publicClient(p.chainId, rpcUrl)
   const explorer = (hash) => `${CHAINS[p.chainId].blockExplorers.default.url}/tx/${hash}`
+  if (p.tab) {
+    // Tab payouts can only reach `to`: the on-chain tab state is the proof.
+    const { settled } = await checkPayment(p, { rpcUrl })
+    if (!settled) return { paid: false, reason: 'tab has not paid this voucher' }
+    if (txHash && /^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+      const r = await client.getTransactionReceipt({ hash: txHash }).catch(() => null)
+      if (r && receiptPays(r, p)) return { paid: true, tx: explorer(txHash) }
+    }
+    return { paid: true }
+  }
   if (txHash && /^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     const r = await client.getTransactionReceipt({ hash: txHash }).catch(() => null)
     if (r && receiptPays(r, p)) return { paid: true, tx: explorer(txHash) }
@@ -350,42 +381,51 @@ export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl
   const head = await client.getBlockNumber()
   for (let to = head, scanned = 0n; scanned < maxBlocks && to > 0n; scanned += LOG_WINDOW + 1n, to -= LOG_WINDOW + 1n) {
     const from = to > LOG_WINDOW ? to - LOG_WINDOW : 0n
-    const logs = p.vault
-      ? await client.getLogs({ address: vaultAddress(p.chainId), event: EV_REDEEMED, args: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to }, fromBlock: from, toBlock: to })
-      : await client.getLogs({ address: tokenAddress(p.chainId, p.token), event: EV_AUTH_USED, args: { authorizer: p.from, nonce: p.nonce }, fromBlock: from, toBlock: to })
+    const logs = await client.getLogs({ address: tokenAddress(p.chainId, p.token), event: EV_AUTH_USED, args: { authorizer: p.from, nonce: p.nonce }, fromBlock: from, toBlock: to })
     for (const log of logs) {
       const r = await client.getTransactionReceipt({ hash: log.transactionHash })
       if (receiptPays(r, p)) return { paid: true, tx: explorer(log.transactionHash) }
-      if (!p.vault) return { paid: false, reason: 'nonce used by another transaction' }
+      return { paid: false, reason: 'nonce used by another transaction' }
     }
   }
   return { paid: false, reason: 'no matching payment found' }
 }
 
-// ---------- vault deposits ----------
-// The owner signs an EIP-3009 ReceiveWithAuthorization to the vault; anyone online submits it.
+// ---------- opening / topping up a tab ----------
+// The payer signs an EIP-3009 ReceiveWithAuthorization to the tabs contract whose nonce
+// commits to the recipient and expiry; anyone online submits it (the gateway pays gas).
 const RECEIVE_TYPES = { ReceiveWithAuthorization: TYPES.TransferWithAuthorization }
+const FUND_TYPEHASH = keccak256(new TextEncoder().encode('TabFunding(address to,uint256 expiry,bytes32 salt)'))
 
-export async function createDeposit({ account, amount, chainId, token = 0, now = Math.floor(Date.now() / 1000) }) {
+export async function createTabFunding({ account, to, amount, days = 7, chainId, token = 0, now = Math.floor(Date.now() / 1000) }) {
+  if (!tabsAddress(chainId)) throw new Error(`no tabs on chain ${chainId}`)
+  const recipient = getAddress(to)
+  if (recipient === account.address) throw new Error('cannot open a tab to yourself')
+  const expiry = BigInt(now + Math.round(days * 86_400))
+  const salt = randomNonce()
+  const nonce = keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'address' }, { type: 'uint256' }, { type: 'bytes32' }], [FUND_TYPEHASH, recipient, expiry, salt]))
   const message = {
-    from: account.address, to: vaultAddress(chainId), value: typeof amount === 'bigint' ? amount : parseUsdc(amount),
-    validAfter: 0n, validBefore: BigInt(now + 3600), nonce: randomNonce(),
+    from: account.address, to: tabsAddress(chainId), value: typeof amount === 'bigint' ? amount : parseUsdc(amount),
+    validAfter: 0n, validBefore: BigInt(now + 3600), nonce,
   }
   const signature = await account.signTypedData({ domain: domain(chainId, token), types: RECEIVE_TYPES, primaryType: 'ReceiveWithAuthorization', message })
-  return { chainId, token, ...message, signature }
+  return { chainId, token, from: account.address, recipient, expiry, salt, value: message.value, validAfter: 0n, validBefore: message.validBefore, signature }
 }
 
-export const depositCall = (d) => ({
-  address: vaultAddress(d.chainId), abi: VAULT_ABI, functionName: 'depositWithAuthorization',
-  args: [tokenAddress(d.chainId, d.token), d.from, BigInt(d.value), BigInt(d.validAfter), BigInt(d.validBefore), d.nonce, ...splitSig(d.signature)],
+export const fundCall = (f) => ({
+  address: tabsAddress(f.chainId), abi: TABS_ABI, functionName: 'fund',
+  args: [tokenAddress(f.chainId, f.token), f.from, f.recipient, BigInt(f.expiry), f.salt, BigInt(f.value), BigInt(f.validAfter), BigInt(f.validBefore), ...splitSig(f.signature)],
 })
 
-export async function vaultState(chainId, token, owner) {
+// Payers who funded tabs for `to` (most recent first), with their tab state.
+export async function tabsTo(chainId, token, to, { limit = 50 } = {}) {
+  if (!tabsAddress(chainId)) return []
   const client = publicClient(chainId)
-  const t = tokenAddress(chainId, token)
-  const read = (functionName) => client.readContract({ address: vaultAddress(chainId), abi: VAULT_ABI, functionName, args: [t, owner] })
-  const [balance, withdrawing, unlocksAt] = await Promise.all([read('balanceOf'), read('withdrawAmount'), read('withdrawUnlocksAt')])
-  return { balance, withdrawing, unlocksAt: Number(unlocksAt) }
+  const [, total] = await client.readContract({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'payersOf', args: [tokenAddress(chainId, token), to, 0n, 0n] })
+  const start = total > BigInt(limit) ? total - BigInt(limit) : 0n
+  const [page] = await client.readContract({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'payersOf', args: [tokenAddress(chainId, token), to, start, BigInt(limit)] })
+  const states = await Promise.all(page.map((from) => tabState(chainId, token, from, to)))
+  return page.map((from, i) => ({ from: getAddress(from), ...states[i] })).reverse()
 }
 
 // When the payer signed it (validBefore is always signing time + PAYMENT_TTL).
@@ -401,13 +441,13 @@ export const ACK_PREFIX = 'arcdrop-ack:2:'
 const RECEIPT_TYPES = {
   Receipt: [
     { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
-    { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'vault', type: 'bool' },
+    { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'tab', type: 'bool' },
   ],
 }
 const receiptTyped = (p) => ({
   domain: { name: 'ArcDrop Receipt', version: '1', chainId: p.chainId },
   types: RECEIPT_TYPES, primaryType: 'Receipt',
-  message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, value: p.value, nonce: p.nonce, vault: !!p.vault },
+  message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, value: p.value, nonce: p.nonce, tab: !!p.tab },
 })
 
 export async function createAck(account, p) {

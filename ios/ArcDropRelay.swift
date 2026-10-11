@@ -18,10 +18,10 @@ import Foundation
 
 enum ArcDropPacket {
     // v1 = USDC (157 bytes); v2 = token u8 + v1 layout (158 bytes), token 1 = EURC;
-    // v3 = vault voucher (154 bytes): token u8 | chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65.
+    // v4 = tab voucher (122 bytes): token u8 | chainId u32 | from 20 | to 20 | epoch u32 | cumulative u64 | sig 65.
     static let prefix = "arcdrop:1:"
     static let prefixV2 = "arcdrop:2:"
-    static let prefixV3 = "arcdrop:3:"
+    static let prefixV4 = "arcdrop:4:"
     static let byteLength = 157
 
     struct Info: Equatable {
@@ -34,7 +34,7 @@ enum ArcDropPacket {
         let validBefore: UInt32
         let nonce: String
         var token: UInt8 = 0
-        var vault = false
+        var tab = false
 
         var symbol: String { token == 1 ? "EURC" : "USDC" }
 
@@ -48,7 +48,7 @@ enum ArcDropPacket {
 
     /// Finds the first packet in arbitrary text (a bitchat message, a link…).
     static func extract(from text: String) -> String? {
-        guard text.count < 4_000, let start = text.range(of: prefixV3) ?? text.range(of: prefixV2) ?? text.range(of: prefix) else { return nil }
+        guard text.count < 4_000, let start = text.range(of: prefixV4) ?? text.range(of: prefixV2) ?? text.range(of: prefix) else { return nil }
         let head = String(text[start])
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
         var body = ""
@@ -57,20 +57,20 @@ enum ArcDropPacket {
             body.unicodeScalars.append(scalar)
             if body.count > 400 { return nil }
         }
-        return body.count >= 150 ? head + body : nil
+        return body.count >= (head == prefixV4 ? 160 : 150) ? head + body : nil
     }
 
     static func decode(_ text: String) -> Info? {
         guard let packet = extract(from: text) else { return nil }
-        let v2 = packet.hasPrefix(prefixV2), v3 = packet.hasPrefix(prefixV3)
+        let v2 = packet.hasPrefix(prefixV2), v4 = packet.hasPrefix(prefixV4)
         var b64 = String(packet.dropFirst(prefix.count))
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64.append("=") }
-        guard let data = Data(base64Encoded: b64), data.count == (v3 ? 154 : byteLength + (v2 ? 1 : 0)) else { return nil }
-        let token: UInt8 = v2 || v3 ? data[data.startIndex] : 0
+        guard let data = Data(base64Encoded: b64), data.count == (v4 ? 122 : byteLength + (v2 ? 1 : 0)) else { return nil }
+        let token: UInt8 = v2 || v4 ? data[data.startIndex] : 0
         guard token <= 1 else { return nil }
-        let bytes = [UInt8](v2 || v3 ? data.dropFirst() : data)
+        let bytes = [UInt8](v2 || v4 ? data.dropFirst() : data)
 
         func uint(_ offset: Int, _ size: Int) -> UInt64 {
             bytes[offset..<offset + size].reduce(0) { $0 << 8 | UInt64($1) }
@@ -78,9 +78,9 @@ enum ArcDropPacket {
         func hex(_ offset: Int, _ size: Int) -> String {
             "0x" + bytes[offset..<offset + size].map { String(format: "%02x", $0) }.joined()
         }
-        if v3 { // chainId u32 | from 20 | to 20 | value u64 | validBefore u32 | nonce 32 | sig 65
+        if v4 { // chainId u32 | from 20 | to 20 | epoch u32 | cumulative u64 | sig 65 (expiry is on-chain)
             return Info(packet: packet, chainId: UInt32(uint(0, 4)), from: hex(4, 20), to: hex(24, 20),
-                        value: uint(44, 8), validBefore: UInt32(uint(52, 4)), nonce: hex(56, 32), token: token, vault: true)
+                        value: uint(48, 8), validBefore: UInt32.max, nonce: hex(44, 12), token: token, tab: true)
         }
         // chainId u32 | from 20 | to 20 | value u64 | validAfter u32 | validBefore u32 | nonce 32 | sig 65
         return Info(

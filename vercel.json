@@ -5,7 +5,7 @@
     "api/relay.mjs": {
       "maxDuration": 30
     },
-    "api/deposit.mjs": {
+    "api/fund.mjs": {
       "maxDuration": 30
     }
   }

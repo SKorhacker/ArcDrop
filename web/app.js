@@ -6,7 +6,7 @@ import {
   createPayment, encodePayment, decodePayment, verifyPayment, paymentLink, extractPacket,
   checkPayment, settlePayment, publicClient, formatUsdc, parseUsdc, CHAINS, USDC_ABI,
   tokenAddress, symbol, createAck, ackNonce, verifyAck, encodeRequest, decodeRequest,
-  vaultAddress, vaultState, createDeposit, VAULT_ABI, confirmSettlement,
+  tabsAddress, tabState, tabsTo, createTabFunding, createTabPayment, TABS_ABI, confirmSettlement,
 } from '../core/arcdrop.js'
 
 const $ = (id) => document.getElementById(id)
@@ -47,7 +47,9 @@ const money = (v, t) => `${fmt(v)} ${symbol(t)}`
 const time = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
 const MIN_VALUE = 10_000n // 0.01
 // A payment's identity, independent of how it was encoded or carried.
-const payId = (p) => `${p.chainId}:${p.token ?? 0}:${p.vault ? 'v' : 'a'}:${p.from}:${p.nonce}`
+const payId = (p) => `${p.chainId}:${p.token ?? 0}:${p.tab ? 't' : 'a'}:${p.from}:${p.nonce}`
+// The amount a payment actually moves: a tab voucher carries a running total.
+const amountOf = (item, p) => (item?.amount != null ? BigInt(item.amount) : p.value)
 // Explorer links are built here from a validated hash, never taken from a server response.
 const txUrl = (hash, c = chainId) => (/^0x[0-9a-fA-F]{64}$/.test(hash ?? '') ? `${CHAINS[c].blockExplorers.default.url}/tx/${hash}` : null)
 const hashOf = (url) => (String(url ?? '').match(/0x[0-9a-fA-F]{64}$/) ?? [])[0]
@@ -106,10 +108,10 @@ function renderWallet() {
 }
 
 // ---------- balances & offline spending cap ----------
-const balanceKey = (t, vault = false) => `${chainId}:${t}${vault ? ':vault' : ''}`
+const balanceKey = (t) => `${chainId}:${t}`
 
-function lastBalance(t, vault = false) {
-  const b = store.get('balances', {})[balanceKey(t, vault)]
+function lastBalance(t) {
+  const b = store.get('balances', {})[balanceKey(t)]
   return b ? BigInt(b) : null
 }
 
@@ -121,15 +123,11 @@ async function refreshBalance() {
     try {
       const b = await client.readContract({ address: tokenAddress(chainId, t), abi: USDC_ABI, functionName: 'balanceOf', args: [account.address] })
       balances[balanceKey(t)] = b.toString()
-      if (vaultAddress(chainId)) {
-        const v = await vaultState(chainId, t, account.address)
-        balances[balanceKey(t, true)] = v.balance.toString()
-        balances[`${balanceKey(t, true)}:withdraw`] = { value: v.withdrawing.toString(), at: v.unlocksAt }
-      }
     } catch { /* offline or RPC hiccup; keep last value */ }
   }
   store.set('balances', balances)
   renderBalances()
+  refreshTabs()
 }
 
 function renderBalances() {
@@ -137,94 +135,146 @@ function renderBalances() {
   $('balance').textContent = main == null ? '—' : money(main, token)
   $('balance2').hidden = !other
   $('balance2').textContent = other ? `et ${money(other, 1 - token)}` : ''
-  renderVault()
+  renderTabs()
   renderAvail()
 }
 
 // Never promise more than the last balance seen on Arc, minus payments still pending.
-// Two pools: the wallet itself, and the vault (guaranteed payments). null = never seen online.
-function availableOffline(t = token, vault = false) {
-  const last = lastBalance(t, vault)
+// Plain payments draw on the wallet; tab payments on their tab. null = never seen online.
+function availableOffline(t = token) {
+  const last = lastBalance(t)
   if (last == null) return null
   const now = BigInt(Math.floor(Date.now() / 1000))
   const promised = store.get('sent', []).filter((s) => s.status === 'pending')
-    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId && (q.token ?? 0) === t && !!q.vault === vault && q.validBefore > now)
+    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId && (q.token ?? 0) === t && !q.tab && q.validBefore > now)
     .reduce((sum, q) => sum + q.value, 0n)
   const left = last - promised
   return left > 0n ? left : 0n
 }
 
 function renderAvail() {
-  const a = availableOffline(), v = availableOffline(token, true)
-  $('avail').textContent = a == null ? '' : `Disponible : ${money(a, token)}${v ? ` · 🔒 ${money(v, token)} au coffre` : ''}`
+  const a = availableOffline()
+  const to = $('payTo').value.trim()
+  const tab = isAddress(to) ? usableTab(getAddress(to)) : null
+  $('avail').textContent = a == null ? '' : `Disponible : ${money(a, token)}${tab ? ` · 🔒 ardoise : ${money(tab.left, token)} garantis` : ''}`
 }
 
-// ---------- offline vault ----------
-function renderVault() {
-  const has = !!vaultAddress(chainId)
-  for (const id of ['vaultAdd', 'vaultOut']) $(id).hidden = !has
-  if (!has) { $('vaultBal').textContent = 'pas sur ce réseau'; return }
-  const v = lastBalance(token, true)
-  $('vaultBal').textContent = v == null ? '—' : money(v, token)
-  const w = store.get('balances', {})[`${balanceKey(token, true)}:withdraw`]
-  const pending = w && BigInt(w.value) > 0n
-  const ready = pending && w.at * 1000 <= Date.now()
-  $('vaultOutLabel').textContent = ready ? `Récupérer ${money(BigInt(w.value), token)}` : 'Retirer…'
-  $('vaultInfo').textContent = pending && !ready
-    ? `Retrait de ${money(BigInt(w.value), token)} disponible le ${new Date(w.at * 1000).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}. Pendant ce temps, l'argent reste au coffre.`
-    : "Argent mis de côté pour payer hors ligne. Un retrait demande 24 h de préavis."
+// ---------- tabs ("ardoises"): guaranteed offline payments to one person ----------
+// Payer side: tabs I opened, with the running total I have signed so far (never decreases).
+// Receiver side: tabs opened for me, seen while online, so offline payments can be shown as guaranteed.
+const tabKey = (t, who) => `${chainId}:${t}:${getAddress(who)}`
+const myTabs = () => store.get('tabs', {})
+const tabsForMe = () => store.get('tabsIn', {})
+const MARGIN = 3600 // a tab must stay open at least this long to be used / trusted
+
+function usableTab(to, t = token) {
+  const tab = myTabs()[tabKey(t, to)]
+  if (!tab || tab.expiry <= Date.now() / 1000 + MARGIN) return null
+  const left = BigInt(tab.locked) - BigInt(tab.cumulative)
+  return left > 0n ? { ...tab, left } : null
+}
+
+async function refreshTabs() {
+  if (!online || !tabsAddress(chainId)) return renderTabs()
+  try {
+    const states = {}
+    for (const [k, tab] of Object.entries(myTabs())) {
+      if (k.startsWith(`${chainId}:`)) states[k] = await tabState(chainId, tab.token, account.address, tab.to)
+    }
+    // Merge into the CURRENT list: a payment may have been signed during the calls above,
+    // and its running total must never go backwards.
+    const mine = myTabs()
+    for (const [k, st] of Object.entries(states)) {
+      const tab = mine[k]
+      if (!tab) continue
+      if (st.expiry === 0 && st.locked === 0n && st.epoch !== tab.epoch) { delete mine[k]; continue } // closed
+      // A new epoch means the tab was closed and reopened: start a new running total.
+      const cumulative = st.epoch === tab.epoch ? (BigInt(tab.cumulative) > st.paid ? BigInt(tab.cumulative) : st.paid) : st.paid
+      mine[k] = { ...tab, locked: st.locked.toString(), paid: st.paid.toString(), expiry: st.expiry, epoch: st.epoch, cumulative: cumulative.toString() }
+    }
+    store.set('tabs', mine)
+    const incoming = {}
+    for (const t of [0, 1]) {
+      for (const tab of await tabsTo(chainId, t, account.address)) {
+        if (tab.locked > tab.paid && tab.expiry > Date.now() / 1000) {
+          incoming[tabKey(t, tab.from)] = { from: tab.from, token: t, locked: tab.locked.toString(), paid: tab.paid.toString(), expiry: tab.expiry, epoch: tab.epoch }
+        }
+      }
+    }
+    store.set('tabsIn', incoming)
+  } catch { /* keep the last known state */ }
+  renderTabs()
+}
+
+const day = (sec) => new Date(sec * 1000).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
+
+function renderTabs() {
+  const has = !!tabsAddress(chainId)
+  $('tabOpen').hidden = !has
+  const now = Date.now() / 1000
+  const rows = []
+  for (const tab of Object.values(myTabs())) {
+    if (tab.chainId !== chainId) continue
+    const left = BigInt(tab.locked) - BigInt(tab.cumulative)
+    const expired = tab.expiry <= now
+    rows.push(`<button class="cell tx" data-tab-close="${tab.to}" data-tab-token="${tab.token}" ${expired ? '' : 'disabled'}>
+      <span class="tx-ic out">🔒</span><span class="cell-main"><div>Pour ${esc(nameOf(tab.to))}</div>
+      <div class="cell-sub">${expired ? 'expirée · touche pour récupérer le reste' : `jusqu’au ${day(tab.expiry)}`}</div></span>
+      <span class="tx-end"><div class="tx-amt">${money(left > 0n ? left : 0n, tab.token)}</div><div class="tx-state">sur ${money(BigInt(tab.locked), tab.token)}</div></span></button>`)
+  }
+  for (const tab of Object.values(tabsForMe())) {
+    rows.push(`<div class="cell tx"><span class="tx-ic in">🔒</span><span class="cell-main"><div>De ${esc(nameOf(tab.from))}</div>
+      <div class="cell-sub">garantie pour toi jusqu’au ${day(tab.expiry)}</div></span>
+      <span class="tx-end"><div class="tx-amt in">${money(BigInt(tab.locked) - BigInt(tab.paid), tab.token)}</div><div class="tx-state">bloqués</div></span></div>`)
+  }
+  $('tabsList').innerHTML = rows.join('') || '<div class="empty">Aucune ardoise</div>'
 }
 
 function askAmount(question) {
   const raw = prompt(question)
   if (!raw) return null
-  try { const v = parseUsdc(raw.replace(',', '.').trim()); return v >= 10_000n ? v : null } catch { return null }
+  try { const v = parseUsdc(raw.replace(',', '.').trim()); return v >= 100_000n ? v : null } catch { return null }
 }
 
-$('vaultAdd').onclick = async () => {
-  if (!online) return toast('Il faut du réseau pour remplir le coffre')
-  const value = askAmount(`Combien de ${symbol(token)} mettre de côté pour payer hors ligne ?`)
-  if (value == null) return
+$('tabOpen').onclick = async () => {
+  if (!online) return toast('Il faut du réseau pour ouvrir une ardoise')
+  let to = $('payTo').value.trim()
+  if (!isAddress(to)) to = (prompt('Adresse 0x… de la personne (ou choisis-la d’abord dans Payer)') ?? '').trim()
+  if (!isAddress(to)) return toast('Adresse invalide')
+  to = getAddress(to)
+  if (to === account.address) return toast("Pas d'ardoise avec toi-même")
+  const value = askAmount(`Combien de ${symbol(token)} bloquer pour ${nameOf(to)} pendant 7 jours ? (min 0,1)`)
+  if (value == null) return toast('Montant invalide (minimum 0,1)')
   if (value > (lastBalance(token) ?? 0n)) return toast('Solde insuffisant')
   try {
-    const d = await createDeposit({ account, amount: value, chainId, token })
-    const r = await fetch(`${gateway()}/api/deposit`, { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ deposit: d }, (_, v) => (typeof v === 'bigint' ? v.toString() : v)) })
+    const f = await createTabFunding({ account, to, amount: value, days: 7, chainId, token })
+    const r = await fetch(`${gateway()}/api/fund`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tab: f }, (_, v) => (typeof v === 'bigint' ? v.toString() : v)) })
     const out = await r.json()
     if (!out.ok) throw new Error(out.error ?? 'refusé')
-    toast(`🔒 ${money(value, token)} dans le coffre`); haptic('success')
+    const st = await tabState(chainId, token, account.address, to)
+    const mine = myTabs()
+    const prev = mine[tabKey(token, to)]
+    mine[tabKey(token, to)] = { chainId, token, to, epoch: st.epoch, locked: st.locked.toString(), paid: st.paid.toString(), expiry: st.expiry,
+      cumulative: (prev && prev.epoch === st.epoch && BigInt(prev.cumulative) > st.paid ? BigInt(prev.cumulative) : st.paid).toString() }
+    store.set('tabs', mine)
+    if (heard.get(to) && !contacts[to]) { contacts[to] = heard.get(to); store.set('contacts', contacts) }
+    toast(`🔒 Ardoise : ${money(value, token)} garantis pour ${nameOf(to)}`); haptic('success')
     refreshBalance()
-  } catch (e) { toast(`Dépôt impossible : ${e.message}`.slice(0, 90)) }
+  } catch (e) { toast(`Ardoise impossible : ${e.message}`.slice(0, 90)) }
 }
 
-$('vaultOut').onclick = async () => {
-  if (!online) return toast('Il faut du réseau pour retirer')
-  const w = store.get('balances', {})[`${balanceKey(token, true)}:withdraw`]
-  const ready = w && BigInt(w.value) > 0n && w.at * 1000 <= Date.now()
-  const wallet = createWalletClient({ account, chain: CHAINS[chainId], transport: http() })
+$('tabsList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-tab-close]')
+  if (!b || b.disabled) return
+  if (!online) return toast('Il faut du réseau')
   try {
-    if (ready) {
-      const hash = await wallet.writeContract({ address: vaultAddress(chainId), abi: VAULT_ABI, functionName: 'withdraw', args: [tokenAddress(chainId, token)] })
-      await publicClient(chainId).waitForTransactionReceipt({ hash })
-      toast('Retrait effectué')
-    } else {
-      const value = askAmount(`Combien de ${symbol(token)} retirer du coffre ? (disponible dans 24 h)`)
-      if (value == null) return
-      const hash = await wallet.writeContract({ address: vaultAddress(chainId), abi: VAULT_ABI, functionName: 'requestWithdraw', args: [tokenAddress(chainId, token), value] })
-      await publicClient(chainId).waitForTransactionReceipt({ hash })
-      toast('Retrait demandé : disponible dans 24 h')
-    }
-    refreshBalance()
-  } catch (e) { toast(`Impossible : ${e.shortMessage ?? e.message}`.slice(0, 90)) }
-}
-
-function setToken(t) {
-  token = t
-  store.set('token', t)
-  $('unitLabel').textContent = symbol(t)
-  renderBalances()
-}
-$('unitBtn').onclick = () => { setToken(1 - token); haptic('light') }
+    const wallet = createWalletClient({ account, chain: CHAINS[chainId], transport: http() })
+    const hash = await wallet.writeContract({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'close', args: [tokenAddress(chainId, Number(b.dataset.tabToken)), b.dataset.tabClose] })
+    await publicClient(chainId).waitForTransactionReceipt({ hash })
+    toast('Reste de l’ardoise récupéré'); refreshBalance()
+  } catch (err) { toast(`Impossible : ${err.shortMessage ?? err.message}`.slice(0, 90)) }
+})
 
 // ---------- connectivity ----------
 let online = false
@@ -275,7 +325,7 @@ $('nearby').addEventListener('click', (e) => {
   if (!b) return
   $('payTo').value = b.dataset.peer
   pendingRequest = null
-  renderWho(); renderNearby(); haptic('light')
+  renderWho(); renderNearby(); renderAvail(); haptic('light')
 })
 
 // Called by the iOS app: the devices currently around, with their signal strength.
@@ -312,7 +362,7 @@ function renderWho() {
   $('payWho').hidden = !parts.length
   $('payWho').innerHTML = parts.join(' ')
 }
-$('payTo').addEventListener('input', () => { pendingRequest = null; renderWho(); renderNearby() })
+$('payTo').addEventListener('input', () => { pendingRequest = null; renderWho(); renderNearby(); renderAvail() })
 
 function shake() {
   const box = $('amountBox')
@@ -377,20 +427,31 @@ $('signBtn').onclick = async () => {
   try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Montant invalide') }
   if (value < 10_000n) { shake(); return toast(`Minimum 0,01 ${symbol(token)}`) }
   if (getAddress(to) === account.address) return toast("C'est ta propre adresse")
-  // Guaranteed payment from the vault when it covers the amount, otherwise a plain one.
-  const fromVault = !!vaultAddress(chainId) && (availableOffline(token, true) ?? 0n) >= value
+  // Guaranteed payment on a tab with this person when it covers the amount, otherwise a plain one.
+  const tab = usableTab(getAddress(to))
+  const onTab = !!tab && tab.left >= value
   const available = availableOffline()
-  if (!fromVault) {
+  if (!onTab) {
     if (available == null) return toast("Ouvre l'app une fois en ligne pour connaître ton solde")
     if (value > available) { shake(); return toast(`Disponible : ${money(available, token)}`) }
   }
 
-  const p = await createPayment({ account, to, amount: value, chainId, token, vault: fromVault })
+  let p
+  if (onTab) {
+    // Record the new running total BEFORE handing anything over: it must never be reused.
+    const mine = myTabs()
+    const cumulative = BigInt(tab.cumulative) + value
+    mine[tabKey(token, to)] = { ...mine[tabKey(token, to)], cumulative: cumulative.toString() }
+    if (!store.set('tabs', mine)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
+    p = await createTabPayment({ account, to, cumulative, epoch: tab.epoch, chainId, token })
+  } else {
+    p = await createPayment({ account, to, amount: value, chainId, token })
+  }
   const packet = encodePayment(p)
   // In the app, AirDrop an arcdrop:// link so the receiver's app opens it directly.
   lastPayment = { p, packet, link: paymentLink(p, mesh ? 'arcdrop://pay' : `${webOrigin}${location.protocol === 'file:' ? '/' : location.pathname}`) }
   const sent = store.get('sent', [])
-  sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label })
+  sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label, amount: value.toString() })
   if (!store.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
   if (nearby.some((n) => n.address === p.to) && heard.get(p.to) && !contacts[p.to]) { contacts[p.to] = heard.get(p.to); store.set('contacts', contacts) }
 
@@ -398,8 +459,8 @@ $('signBtn').onclick = async () => {
   const near = nearby.some((n) => n.address === p.to)
   if (mesh && near) mesh.postMessage({ type: 'broadcast', packet })
 
-  $('outAmount').textContent = money(p.value, p.token)
-  $('outPill').textContent = p.vault ? 'Signé · 🔒 coffre' : 'Signé · en attente'
+  $('outAmount').textContent = money(value, p.token)
+  $('outPill').textContent = p.tab ? 'Signé · 🔒 garanti (ardoise)' : 'Signé · en attente'
   $('outTo').textContent = `à ${nameOf(p.to)}`
   $('transportHint').textContent = near
     ? `Envoyé en Bluetooth à ${nameOf(p.to)}. Tu peux aussi montrer le QR ou utiliser AirDrop.`
@@ -458,9 +519,24 @@ async function importPacket(text, via, hops) {
   }
   const inbox = store.get('inbox', [])
   if (inbox.some((i) => (i.id ?? payId(tryDecode(i.packet) ?? {})) === id)) return // same payment, any encoding
-  inbox.unshift({ id, packet: raw, via, hops, at: Date.now(), status: 'pending' })
+  let amount = p.value, guaranteed = false
+  if (p.tab) {
+    // A tab voucher states the running total: this payment is the increase over the best one held.
+    const rx = store.get('tabRx', {})
+    const rk = `${tabKey(p.token, p.from)}:${p.epoch}`
+    const prev = BigInt(rx[rk] ?? 0)
+    if (p.cumulative <= prev) return // an older voucher of the same tab: nothing new
+    amount = p.cumulative - prev
+    rx[rk] = p.cumulative.toString()
+    if (!store.set('tabRx', rx)) return toast('Stockage plein : paiement non enregistré')
+    const known = tabsForMe()[tabKey(p.token, p.from)]
+    guaranteed = !!known && known.epoch === p.epoch && BigInt(known.locked) >= p.cumulative && known.expiry > Date.now() / 1000 + MARGIN
+  }
+  inbox.unshift({ id, packet: raw, via, hops, at: Date.now(), status: 'pending', amount: amount.toString(), guaranteed })
   if (!store.set('inbox', inbox)) toast('Stockage plein : garde ce paiement (capture du QR) !')
-  toast(`${money(p.value, p.token)} de ${nameOf(p.from)} · signature vérifiée, pas encore réglé`)
+  toast(p.tab
+    ? `${money(amount, p.token)} de ${nameOf(p.from)} · ${guaranteed ? '🔒 garanti par son ardoise' : 'ardoise non vérifiée'}`
+    : `${money(amount, p.token)} de ${nameOf(p.from)} · signature vérifiée, pas encore réglé`)
   haptic('success')
   // Tell the payer, over Bluetooth and without internet, that it arrived (real payments only).
   if (mesh && p.value >= MIN_VALUE) mesh.postMessage({ type: 'broadcast', packet: await createAck(account, p) })
@@ -473,12 +549,10 @@ async function importPacket(text, via, hops) {
 globalThis.arcdropReceipt = async (text) => {
   let nonce
   try { ({ nonce } = ackNonce(text)) } catch { return }
-  const sent = store.get('sent', [])
-  const s = sent.find((x) => tryDecode(x.packet)?.nonce === nonce)
+  const s = store.get('sent', []).find((x) => tryDecode(x.packet)?.nonce === nonce)
   const p = s && tryDecode(s.packet)
   if (!p || s.delivered || !(await verifyAck(text, p))) return
-  s.delivered = Date.now()
-  store.set('sent', sent); renderSent()
+  updateEntry('sent', s.packet, { delivered: Date.now() }); renderSent()
   toast(`✓ ${nameOf(p.to)} a reçu ${money(p.value, p.token)}`)
   haptic('success')
 }
@@ -584,7 +658,7 @@ function renderRequestStatus() {
   const seen = new Set()
   const got = store.get('inbox', []).map((i) => ({ i, p: tryDecode(i.packet) }))
     .filter(({ i, p }) => p && i.at >= activeRequest.since && p.chainId === chainId && p.to === account.address
-      && p.value === activeRequest.value && (p.token ?? 0) === activeRequest.token && i.status !== 'failed'
+      && amountOf(i, p) === activeRequest.value && (p.token ?? 0) === activeRequest.token && i.status !== 'failed'
       && !seen.has(payId(p)) && seen.add(payId(p)))
   const paid = got.filter(({ i }) => i.status === 'settled').length
   $('reqStatus').innerHTML = got.length
@@ -608,25 +682,42 @@ $('splitPlus').onclick = () => { $('splitN').textContent = Math.min(20, Number($
 // ---------- settlement ----------
 let settling = false
 
+// Lists can change while a slow network call is in flight (a new payment arrives, a new one
+// is signed): always re-read and update the one entry, never write back an old snapshot.
+function updateEntry(list, packet, patch) {
+  const all = store.get(list, [])
+  const entry = all.find((x) => x.packet === packet)
+  if (!entry) return null
+  Object.assign(entry, patch)
+  store.set(list, all)
+  return entry
+}
+
+let settleAgain = false
 async function settleAll() {
-  if (settling || !online) return
+  if (!online) return
+  if (settling) { settleAgain = true; return } // something arrived mid-run: one more pass after
   settling = true
   try {
-    const inbox = store.get('inbox', [])
-    for (const item of inbox.filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
-      Object.assign(item, await settleOne(item.packet, true))
-      if (item.status === 'settled' && !item.settledAt) item.settledAt = Date.now()
-      store.set('inbox', inbox); renderInbox(); renderRequestStatus()
+    for (const pending of store.get('inbox', []).filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
+      const result = await settleOne(pending.packet, true)
+      if (result.status === 'settled' && !pending.settledAt) result.settledAt = Date.now()
+      const item = updateEntry('inbox', pending.packet, result)
+      renderInbox(); renderRequestStatus()
+      if (!item) continue
       const p = decodePayment(item.packet)
       if (item.status === 'settled' && txUrl(hashOf(item.tx))) {
-        confirmSettled({ title: 'Paiement reçu', amount: `+${money(p.value, p.token)}`, sub: `de ${nameOf(p.from)} · par ${item.via ?? '—'}`, ms: item.ms, tx: txUrl(hashOf(item.tx)) })
+        confirmSettled({ title: 'Paiement reçu', amount: `+${money(amountOf(item, p), p.token)}`, sub: `de ${nameOf(p.from)} · par ${item.via ?? '—'}`, ms: item.ms, tx: txUrl(hashOf(item.tx)) })
       }
     }
     // Strangers' payments: forwarded through the gateway only, never with our own gas.
     for (const r of relays.filter((x) => x.status === 'pending')) { Object.assign(r, await settleOne(r.packet, false)); renderInbox() }
     await refreshSent()
     refreshBalance()
-  } finally { settling = false }
+  } finally {
+    settling = false
+    if (settleAgain) { settleAgain = false; settleAll() }
+  }
 }
 
 // "Settled" only with on-chain proof that exactly this amount reached exactly this recipient.
@@ -665,21 +756,19 @@ async function settleOne(packet, mine) {
 }
 
 async function refreshSent() {
-  const sent = store.get('sent', [])
-  for (const s of sent.filter((s) => s.status === 'pending')) {
+  for (const s of store.get('sent', []).filter((s) => s.status === 'pending')) {
     const p = tryDecode(s.packet)
     if (!p) continue
     try {
-      if (p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) { s.status = 'failed'; continue }
+      if (p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) { updateEntry('sent', s.packet, { status: 'failed' }); continue }
       if ((await checkPayment(p)).settled) {
         const r = await proven(p)
-        s.status = r.status === 'settled' ? 'settled' : r.status
-        s.settledAt = Date.now()
-        if (r.status === 'settled') confirmSettled({ title: 'Paiement réglé', amount: money(p.value, p.token), sub: `à ${nameOf(p.to)} · final sur Arc`, tx: r.tx })
+        updateEntry('sent', s.packet, { status: r.status, settledAt: Date.now() })
+        if (r.status === 'settled') confirmSettled({ title: 'Paiement réglé', amount: money(amountOf(s, p), p.token), sub: `à ${nameOf(p.to)} · final sur Arc`, tx: r.tx })
       }
     } catch {}
   }
-  store.set('sent', sent); renderSent()
+  renderSent()
 }
 
 // ---------- confirmation ----------
@@ -734,7 +823,7 @@ function journey(item, p) {
   }
   if (item.ms) settled += ` · en ${(item.ms / 1000).toFixed(2).replace('.', ',')} s`
   return `<ol>
-    <li class="done">Signé hors ligne par ${esc(nameOf(p.from))}${p.vault ? ' · tiré de son coffre' : ''}</li>
+    <li class="done">Signé hors ligne par ${esc(nameOf(p.from))}${p.tab ? (item.guaranteed ? ' · 🔒 garanti par son ardoise' : ' · ardoise non vérifiée') : ''}</li>
     <li class="done">${carried} à ${time(item.at)} · signature vérifiée</li>
     <li class="${s === 'settled' ? 'done' : s === 'failed' ? 'fail' : ''}">${settled}${txUrl(hashOf(item.tx)) ? ` · <a href="${txUrl(hashOf(item.tx))}" target="_blank" rel="noopener">voir la tx</a>` : ''}</li>
   </ol>${item.note ? `<div class="note">${esc(item.note)}</div>` : ''}`
@@ -757,8 +846,8 @@ function renderInbox() {
     return txCell({
       icon: mine ? ICON_IN : ICON_RELAY, kind: mine ? 'in' : 'relay',
       title: mine ? `De ${nameOf(p.from)}` : 'Relayé',
-      sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`) + (p.vault ? ' · 🔒 coffre' : ''),
-      amount: `${mine ? '+' : ''}${money(p.value, p.token)}`, amountClass: mine ? 'in' : '',
+      sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`) + (p.tab && item.guaranteed ? ' · 🔒 garanti' : ''),
+      amount: `${mine ? '+' : ''}${money(amountOf(item, p), p.token)}`, amountClass: mine ? 'in' : '',
       status: item.status, details: journey(item, p),
     })
   }).join('') : EMPTY
@@ -773,7 +862,7 @@ function renderSent() {
     return txCell({
       icon: ICON_OUT, kind: 'out', title: `À ${nameOf(p.to)}`,
       sub: s.label ? `${s.label} · ${when}` : when,
-      amount: `−${money(p.value, p.token)}`,
+      amount: `−${money(amountOf(s, p), p.token)}`,
       status: s.status === 'pending' && s.delivered ? 'delivered' : s.status,
     })
   }).join('') : EMPTY

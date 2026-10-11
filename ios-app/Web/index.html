@@ -309,13 +309,12 @@
     <label class="cell has-icon"><span class="tile" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg></span><span style="flex:none">Passerelle</span>
       <input id="gateway" placeholder="ce site" style="text-align:right;color:var(--label-2)" autocomplete="off"></label>
   </div>
-  <div class="group-title">Coffre hors ligne</div>
+  <div class="group-title">Ardoises · paiements garantis</div>
   <div class="group">
-    <div class="cell has-icon"><span class="tile" style="background:#AF52DE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span class="cell-main">Dans le coffre</span><span class="cell-sub" id="vaultBal">—</span></div>
-    <button class="cell has-icon" id="vaultAdd"><span class="tile" style="background:#AF52DE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span><span class="cell-main">Mettre de côté…</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
-    <button class="cell has-icon" id="vaultOut"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg></span><span class="cell-main" id="vaultOutLabel">Retirer…</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <div id="tabsList"></div>
+    <button class="cell has-icon" id="tabOpen"><span class="tile" style="background:#AF52DE"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span class="cell-main">Ouvrir une ardoise…</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
   </div>
-  <p class="footnote" id="vaultInfo">Argent mis de côté pour payer hors ligne. Un retrait demande 24 h de préavis.</p>
+  <p class="footnote">Bloque une somme pour une personne pendant 7 jours : tes paiements hors ligne à cette personne sont alors garantis. L’argent ne peut aller qu’à elle ; le reste te revient à l’expiration.</p>
 
   <div class="group" style="margin-top:20px">
     <button class="cell has-icon" id="exportKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/></svg></span><span class="cell-main">Exporter la clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
