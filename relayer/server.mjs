@@ -15,6 +15,7 @@ import { decodePayment, verifyPayment, checkPayment, simulatePayment, settlePaym
 
 const PORT = Number(process.env.PORT ?? 8787)
 const RPC_URL = process.env.ARC_RPC_URL
+const MIN_VALUE = 10_000n // 0.01 USDC
 const relayer = process.env.RELAYER_PRIVATE_KEY ? privateKeyToAccount(process.env.RELAYER_PRIVATE_KEY) : null
 const WEB = fileURLToPath(new URL('../web/dist/', import.meta.url))
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.css': 'text/css' }
@@ -38,6 +39,9 @@ async function body(req) {
 export async function relay(text) {
   let p
   try { p = decodePayment(text) } catch (e) { return { code: 400, body: { ok: false, error: e.message } } }
+  // The gateway pays the gas, so it only relays payments that move real money:
+  // otherwise anyone could drain it with free 0-USDC payments from empty wallets.
+  if (relayer && p.value < MIN_VALUE) return { code: 400, body: { ok: false, error: `minimum ${formatUsdc(MIN_VALUE)} USDC` } }
   const check = await verifyPayment(p)
   if (!check.ok) return { code: 400, body: { ok: false, error: check.reason } }
 

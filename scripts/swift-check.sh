@@ -12,7 +12,8 @@ YAML
 OVERLAY=""
 [ -f /Library/Developer/CommandLineTools/usr/include/swift/bridging.modulemap ] && OVERLAY="-vfsoverlay $TMP/overlay.yaml"
 swiftc $OVERLAY ios/ArcDropRelay.swift ios/check/main.swift -o "$TMP/relaytest"
-curl -sf localhost:8787/api/info >/dev/null || { echo "start the gateway first: npm run dev"; exit 1; }
+INFO=$(curl -sf localhost:8787/api/info) || { echo "start a simulate-only gateway first: node relayer/server.mjs"; exit 1; }
+case "$INFO" in *\"relayer\":null*) ;; *) echo "gateway has a relayer key: restart it without one (node relayer/server.mjs) so this check moves no funds"; exit 1;; esac
 P0=$(node scripts/make-test-packet.mjs 0); P5=$(node scripts/make-test-packet.mjs 5)
 Q0=$(node scripts/make-test-packet.mjs 0)
 # Same packet with 3 bytes of the signed body replaced: decodes, but the signature no longer matches.

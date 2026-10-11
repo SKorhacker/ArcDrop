@@ -91,7 +91,7 @@ $('signBtn').onclick = async () => {
   if (!isAddress(to)) return toast('Adresse destinataire invalide')
   let value
   try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Montant invalide') }
-  if (value <= 0n) return toast('Montant invalide')
+  if (value < 10_000n) return toast('Minimum 0,01 USDC')
   if (getAddress(to) === account.address) return toast("C'est ta propre adresse")
   // Offline spending cap: never promise more than the last balance seen on Arc,
   // minus what is already promised and not yet settled.
