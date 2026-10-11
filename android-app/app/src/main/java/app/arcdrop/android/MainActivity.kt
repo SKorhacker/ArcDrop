@@ -3,6 +3,7 @@ package app.arcdrop.android
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -34,9 +35,9 @@ import org.json.JSONObject
  *
  * JS -> native: ArcMeshAndroid.postMessage(JSON) — a WebMessageListener that only exists on the
  *               app's own origin, main frame only. Messages: broadcast, profile, presence, share,
- *               haptic, saveKey (same protocol as the iOS app).
+ *               haptic, saveKey (same protocol as the iOS app), readClipboard (Android only).
  * native -> JS: arcdropReceive(packet, hops), arcdropReceipt, arcdropNearby, arcdropMeshPeers,
- *               arcdropOpenURL, arcdropKeySaved.
+ *               arcdropOpenURL, arcdropKeySaved, arcdropClipboard.
  */
 class MainActivity : Activity(), ArcMesh.Listener {
 
@@ -186,6 +187,12 @@ class MainActivity : Activity(), ArcMesh.Listener {
                 startActivity(Intent.createChooser(send, "Envoyer le paiement"))
             }
             "haptic" -> vibrate(body.optString("kind"))
+            "readClipboard" -> {
+                // Only when the user tapped "Coller" (the page asks), only text, bounded.
+                val clip = (getSystemService(ClipboardManager::class.java))?.primaryClip
+                val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this)?.toString().orEmpty() else ""
+                call("arcdropClipboard", text.take(4096))
+            }
             "saveKey" -> {
                 // Never overwrite an existing wallet unless the user explicitly imported a key.
                 val key = body.optString("key").takeIf { Regex("^0x[0-9a-fA-F]{64}$").matches(it) } ?: return

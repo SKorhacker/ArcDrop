@@ -648,9 +648,18 @@ function handleText(text, via) {
 }
 
 $('importBtn').onclick = () => { handleText($('pasteBox').value, 'copier-coller'); $('pasteBox').value = '' }
+// Android web views can't read the clipboard: the app reads it natively and answers via arcdropClipboard.
+function readClipboard() {
+  if (!globalThis.ArcMeshAndroid) return navigator.clipboard.readText()
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(''), 2000)
+    globalThis.arcdropClipboard = (text) => { clearTimeout(t); resolve(typeof text === 'string' ? text : '') }
+    mesh.postMessage({ type: 'readClipboard' })
+  })
+}
 $('pastePay').onclick = async () => {
   try {
-    const text = await navigator.clipboard.readText()
+    const text = await readClipboard()
     if (extractPacket(text) || decodeRequest(text)) return handleText(text, 'copier-coller')
   } catch { /* clipboard blocked: fall back to the manual field */ }
   $('manual').hidden = false
