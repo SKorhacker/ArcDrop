@@ -534,7 +534,7 @@ $('signBtn').onclick = async () => {
   $('outPill').textContent = p.tab ? 'Signé · 🔒 garanti (ardoise)' : 'Signé · en attente'
   $('outTo').textContent = `à ${nameOf(p.to)}`
   $('transportHint').textContent = near
-    ? `Envoyé en Bluetooth à ${nameOf(p.to)}. Tu peux aussi montrer le QR ou utiliser AirDrop.`
+    ? `Envoyé en Bluetooth à ${nameOf(p.to)}. Tu peux aussi montrer le QR ou utiliser ${APPLE ? 'AirDrop' : 'le partage'}.`
     : 'Aucun réseau nécessaire. Le premier appareil qui capte règle le paiement sur Arc.'
   await qrInto($('outQr'), lastPayment.link)
   openSheet('payOut')
@@ -561,7 +561,7 @@ $('tShare').onclick = async () => {
 // Bluetooth mesh: only the native iOS app can use Bluetooth.
 $('tMesh').onclick = () => {
   if (!lastPayment) return
-  if (!mesh) return toast("Le Bluetooth arrive avec l'app iOS. Ici : QR ou AirDrop.")
+  if (!mesh) return toast(`Le Bluetooth demande l'app ArcDrop. Ici : QR ou ${APPLE ? 'AirDrop' : 'partage'}.`)
   mesh.postMessage({ type: 'broadcast', packet: lastPayment.packet })
   toast('Diffusé en Bluetooth aux appareils proches')
 }
@@ -640,6 +640,10 @@ globalThis.arcdropReceipt = async (text) => {
 
 // The native side passes (packet, hops) for Bluetooth deliveries.
 globalThis.arcdropReceive = (text, hops) => importPacket(text, 'Bluetooth', hops)
+// AirDrop only exists on Apple devices: elsewhere the same button opens the system share sheet.
+const APPLE = !!globalThis.webkit?.messageHandlers?.arcmesh || /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
+const SHARE_NAME = APPLE ? 'AirDrop' : 'Partager'
+$('tShareLabel').textContent = SHARE_NAME
 globalThis.arcdropOpenURL = (url) => handleText(url, 'lien externe') // arcdrop://… opened by iOS (AirDrop, or any app/site)
 
 // Anything scanned, pasted or opened: a payment request or a payment.
