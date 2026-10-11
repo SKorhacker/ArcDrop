@@ -17,7 +17,11 @@ const store = {
 let key = store.get('key')
 if (!key) { key = generatePrivateKey(); store.set('key', key) }
 let account = privateKeyToAccount(key)
-let chainId = store.get('chain', 5042)
+// Default network is set at build time (ARCDROP_CHAIN=mainnet|testnet); `?net=` overrides it.
+const NETS = { mainnet: 5042, testnet: 5042002 }
+const urlNet = NETS[new URLSearchParams(location.search).get('net')]
+if (urlNet) store.set('chain', urlNet)
+let chainId = urlNet ?? store.get('chain', NETS[ARCDROP_CHAIN] ?? 5042002)
 const gateway = () => (store.get('gateway', '') || location.origin).replace(/\/$/, '')
 // Stored entries may be corrupted or from an older format: skip them instead of breaking the app.
 const tryDecode = (packet) => { try { return decodePayment(packet) } catch { return null } }

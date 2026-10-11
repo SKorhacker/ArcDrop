@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "node scripts/build.mjs && node relayer/server.mjs",
+    "dev": "node scripts/build.mjs && node --env-file-if-exists=.env relayer/server.mjs",
     "test": "node test/packet.test.mjs",
-    "relay": "node relayer/cli.mjs"
+    "relay": "node --env-file-if-exists=.env relayer/cli.mjs",
+    "e2e": "node --env-file=.env scripts/e2e.mjs"
   },
   "keywords": [],
   "author": "",
