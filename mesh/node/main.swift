@@ -1,6 +1,6 @@
 // ArcDrop mesh relay for macOS: joins the Bluetooth mesh, carries payments,
 // and settles them through the gateway whenever this Mac has internet.
-//   arcmesh-node [gateway-url]          then paste packets on stdin to broadcast them
+//   arcmesh-node [gateway-url] [0xaddress name]   then paste packets on stdin to broadcast them
 import Foundation
 
 /// Strings from the air or from a gateway may contain terminal escape sequences:
@@ -24,7 +24,7 @@ final class Node: ArcMeshDelegate {
     }
     func mesh(_ mesh: ArcMesh, peersChanged count: Int) { print("📡 linked devices: \(count)") }
     func mesh(_ mesh: ArcMesh, nearbyChanged peers: [NearbyPeer]) {
-        print("👥 nearby: " + (peers.isEmpty ? "nobody" : peers.map { "\($0.name.isEmpty ? String($0.address.prefix(10)) : clean($0.name, max: 24)) …\($0.address.suffix(4)) (\($0.rssi.map { "\($0) dBm" } ?? "?"))" }.joined(separator: ", ")))
+        print("👥 nearby: " + (peers.isEmpty ? "nobody" : peers.map { "\($0.name.isEmpty ? "?" : clean($0.name, max: 24)) \($0.address) (\($0.rssi.map { "\($0) dBm" } ?? "?"))" }.joined(separator: ", ")))
     }
     func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String) { print("🧾 receipt carried over Bluetooth") }
     func mesh(_ mesh: ArcMesh, log: String) { print("· \(clean(log))") }
@@ -60,6 +60,10 @@ if CommandLine.arguments.count > 1 {
     UserDefaults.standard.set(CommandLine.arguments[1], forKey: "arcdrop.gateway")
 }
 let node = Node()
+// Optional presence: arcmesh-node <gateway> <0xaddress> <name> makes the Mac show up in "Nearby".
+if CommandLine.arguments.count > 3 {
+    node.mesh.setProfile(address: CommandLine.arguments[2], name: CommandLine.arguments[3])
+}
 print("ArcDrop mesh node started. Paste an arcdrop:1:… packet and press enter to broadcast it.")
 
 let stdin = FileHandle.standardInput
