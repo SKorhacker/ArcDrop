@@ -58,8 +58,9 @@ async function refreshBalance() {
   try {
     const b = await publicClient(chainId).readContract({ address: USDC, abi: USDC_ABI, functionName: 'balanceOf', args: [account.address] })
     // Gas leaves dust like 0.497821: show cents, rounded down so we never overstate.
-    $('balance').textContent = `${formatUsdc(b - (b % 10_000n))} USDC`
+    $('balance').textContent = `${formatUsdc(b - (b % 10_000n)).replace('.', ',')} USDC`
     store.set('lastBalance', { chainId, value: b.toString(), at: Date.now() })
+    renderAvail()
   } catch { /* offline or RPC hiccup; keep last value */ }
 }
 
@@ -89,38 +90,83 @@ setInterval(probe, 5000)
 
 // ---------- pay ----------
 let lastPayment = null
+const fmt = (v) => formatUsdc(v - (v % 10_000n)).replace('.', ',')
+
+// Offline spending cap: never promise more than the last balance seen on Arc,
+// minus what is already promised and not yet settled. null = balance never seen.
+function availableOffline() {
+  const last = store.get('lastBalance')
+  if (!last || last.chainId !== chainId) return null
+  const promised = store.get('sent', []).filter((s) => s.status === 'pending')
+    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId)
+    .reduce((sum, q) => sum + q.value, 0n)
+  const left = BigInt(last.value) - promised
+  return left > 0n ? left : 0n
+}
+
+function renderAvail() {
+  const a = availableOffline()
+  $('avail').textContent = a == null ? '' : `Disponible : ${fmt(a)} USDC`
+}
+
+function shake() {
+  const box = $('amountBox')
+  box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake')
+  navigator.vibrate?.(30)
+}
+
+// Keypad: digits, one decimal comma, at most 2 decimals and 7 integer digits.
+$('keypad').addEventListener('click', (e) => {
+  const k = e.target.closest('[data-k]')?.dataset.k
+  if (!k) return
+  let v = $('payAmount').value
+  if (k === 'del') v = v.slice(0, -1)
+  else if (k === ',') { if (!v.includes(',')) v = (v || '0') + ',' }
+  else {
+    const [int, dec] = v.split(',')
+    if (dec !== undefined ? dec.length >= 2 : int.length >= 7) return shake()
+    v = v === '0' ? k : v + k
+  }
+  $('payAmount').value = v
+  fitAmount()
+})
+
+function openSheet() {
+  $('scrim').hidden = false; $('payOut').hidden = false
+  requestAnimationFrame(() => requestAnimationFrame(() => { $('scrim').classList.add('show'); $('payOut').classList.add('show') }))
+}
+function closeSheet() {
+  $('scrim').classList.remove('show'); $('payOut').classList.remove('show')
+  setTimeout(() => { $('scrim').hidden = true; $('payOut').hidden = true }, 450)
+}
+$('closeSheet').onclick = closeSheet
+$('scrim').onclick = closeSheet
 
 $('signBtn').onclick = async () => {
   const to = $('payTo').value.trim()
   if (!isAddress(to)) return toast('Adresse destinataire invalide')
   let value
   try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Montant invalide') }
-  if (value < 10_000n) return toast('Minimum 0,01 USDC')
+  if (value < 10_000n) { shake(); return toast('Minimum 0,01 USDC') }
   if (getAddress(to) === account.address) return toast("C'est ta propre adresse")
-  // Offline spending cap: never promise more than the last balance seen on Arc,
-  // minus what is already promised and not yet settled.
-  const last = store.get('lastBalance')
-  if (!last || last.chainId !== chainId) return toast('Ouvre l\'app une fois en ligne pour connaître ton solde')
-  const promised = store.get('sent', []).filter((s) => s.status === 'pending')
-    .map((s) => tryDecode(s.packet)).filter((q) => q?.chainId === chainId)
-    .reduce((sum, q) => sum + q.value, 0n)
-  const available = BigInt(last.value) - promised
-  if (value > available) return toast(`Solde hors ligne disponible : ${formatUsdc(available > 0n ? available : 0n)} USDC`)
+  const available = availableOffline()
+  if (available == null) return toast('Ouvre l\'app une fois en ligne pour connaître ton solde')
+  if (value > available) { shake(); return toast(`Disponible : ${fmt(available)} USDC`) }
   const p = await createPayment({ account, to, amount: value, chainId })
   const packet = encodePayment(p)
   lastPayment = { p, packet, link: paymentLink(p, location.origin + location.pathname) }
   const sent = store.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending' })
   store.set('sent', sent)
-  $('outAmount').textContent = `${formatUsdc(p.value)} USDC`
-  $('outTo').textContent = `à ${p.to}`
+  $('outAmount').textContent = `${formatUsdc(p.value).replace('.', ',')} USDC`
+  $('outTo').textContent = `à ${short(p.to)}`
   await qrInto($('outQr'), lastPayment.link)
-  $('payOut').hidden = false
-  $('payOut').scrollIntoView({ behavior: 'smooth' })
-  renderSent()
+  openSheet()
+  $('payAmount').value = ''; fitAmount()
+  renderSent(); renderAvail()
 }
 
-$('tQr').onclick = () => { $('outQr').scrollIntoView({ behavior: 'smooth' }); toast('Ton pote scanne ce QR depuis « Recevoir »') }
+$('tQr').onclick = () => toast('Ton pote scanne ce QR depuis « Recevoir »')
 
 // AirDrop: the iOS share sheet offers AirDrop and works without internet.
 $('tShare').onclick = async () => {
@@ -175,13 +221,24 @@ async function importPacket(text, via) {
 
 $('importBtn').onclick = () => { importPacket($('pasteBox').value, 'copier-coller'); $('pasteBox').value = '' }
 // The amount field grows with its content so "USDC" stays right next to the number.
-const fitAmount = () => { const el = $('payAmount'); el.style.width = `${Math.max(1, (el.value || el.placeholder).length) + 0.2}ch` }
-$('payAmount').addEventListener('input', fitAmount)
-fitAmount()
-for (const b of document.querySelectorAll('[data-amount]')) b.onclick = () => { $('payAmount').value = b.dataset.amount; fitAmount(); $('payTo').focus() }
-$('pastePay').onclick = async () => {
-  try { importPacket(await navigator.clipboard.readText(), 'copier-coller') } catch { $('pasteBox').focus() }
+// The amount field is as wide as its text, so "USDC" sits right next to the number.
+const measure = document.createElement('canvas').getContext('2d')
+function fitAmount() {
+  const el = $('payAmount')
+  const cs = getComputedStyle(el)
+  measure.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+  el.style.width = `${Math.ceil(measure.measureText(el.value || el.placeholder).width) + 2}px`
 }
+fitAmount()
+$('pastePay').onclick = async () => {
+  try {
+    const text = await navigator.clipboard.readText()
+    if (extractPacket(text)) return importPacket(text, 'copier-coller')
+  } catch { /* clipboard blocked: fall back to the manual field */ }
+  $('manual').hidden = false
+  $('pasteBox').focus()
+}
+for (const id of ['copyAddr', 'copyAddr2']) $(id).onclick = async () => { await copy(account.address); toast('Adresse copiée') }
 
 // AirDrop / any link opens the app with #p=…
 function handleHash() {
@@ -279,20 +336,32 @@ async function refreshSent() {
 }
 
 // ---------- render ----------
-const LABEL = { pending: 'en attente', settled: 'réglé sur Arc', failed: 'échec' }
 
 const ICON_IN = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>'
 const ICON_OUT = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>'
 const ICON_RELAY = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg>'
-const EMPTY = '<div class="empty">Rien pour l\'instant.</div>'
+const EMPTY = '<div class="empty">Aucun paiement pour l\'instant</div>'
+document.addEventListener('click', (e) => {
+  const row = e.target.closest('[data-expand]')
+  if (row && !e.target.closest('a')) row.nextElementSibling.hidden = !row.nextElementSibling.hidden
+})
+
+const STATE = { pending: 'en attente', settled: 'réglé', failed: 'échec' }
 
 function steps(item) {
   const s = item.status
-  return `<ol class="steps">
+  return `<ol>
     <li class="done">Signé hors ligne par le payeur</li>
     <li class="done">Reçu par ${item.via ?? '—'} · signature vérifiée</li>
     <li class="${s === 'settled' ? 'done' : s === 'failed' ? 'fail' : ''}">Réglé sur Arc${item.ms ? ` en ${(item.ms / 1000).toFixed(2)} s` : ''}${item.tx ? ` · <a href="${item.tx}" target="_blank" rel="noopener">voir la tx</a>` : ''}</li>
   </ol>${item.note ? `<div class="note">${item.note}</div>` : ''}`
+}
+
+function txCell({ icon, kind, title, sub, amount, amountClass = '', status, details }) {
+  return `<button class="cell tx" ${details ? 'data-expand' : ''}><span class="tx-ic ${kind}">${icon}</span>
+    <span class="cell-main"><div>${title}</div><div class="cell-sub">${sub}</div></span>
+    <span class="tx-end"><div class="tx-amt ${amountClass}">${amount}</div><div class="tx-state ${status}">${STATE[status]}</div></span></button>
+    ${details ? `<div class="details" hidden>${details}</div>` : ''}`
 }
 
 function renderInbox() {
@@ -302,10 +371,13 @@ function renderInbox() {
     if (!p) return ''
     const mine = p.to === account.address
     // A payment for someone else is only carried by this device: never show it as income.
-    return `<div class="tx"><div class="tx-top"><span class="tx-ic ${mine ? '' : 'relay'}">${mine ? ICON_IN : ICON_RELAY}</span>
-      <div class="tx-main"><div class="tx-amt">${mine ? '+' : ''}${formatUsdc(p.value)} USDC</div>
-      <div class="tx-sub">${mine ? `de ${short(p.from)}` : `relayé : ${short(p.from)} → ${short(p.to)}`}</div></div>
-      <span class="pill ${item.status}">${LABEL[item.status]}</span></div>${steps(item)}</div>`
+    return txCell({
+      icon: mine ? ICON_IN : ICON_RELAY, kind: mine ? 'in' : 'relay',
+      title: mine ? `De ${short(p.from)}` : 'Relayé',
+      sub: mine ? `par ${item.via ?? '—'}` : `${short(p.from)} → ${short(p.to)}`,
+      amount: `${mine ? '+' : ''}${formatUsdc(p.value).replace('.', ',')}`, amountClass: mine ? 'in' : '',
+      status: item.status, details: steps(item),
+    })
   }).join('') : EMPTY
 }
 
@@ -314,10 +386,11 @@ function renderSent() {
   $('sent').innerHTML = sent.length ? sent.map((s) => {
     const p = tryDecode(s.packet)
     if (!p) return ''
-    return `<div class="tx"><div class="tx-top"><span class="tx-ic out">${ICON_OUT}</span>
-      <div class="tx-main"><div class="tx-amt">−${formatUsdc(p.value)} USDC</div>
-      <div class="tx-sub">à ${short(p.to)} · ${new Date(s.at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</div></div>
-      <span class="pill ${s.status}">${LABEL[s.status]}</span></div></div>`
+    return txCell({
+      icon: ICON_OUT, kind: 'out', title: `À ${short(p.to)}`,
+      sub: new Date(s.at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+      amount: `−${formatUsdc(p.value).replace('.', ',')}`, status: s.status,
+    })
   }).join('') : EMPTY
 }
 
@@ -325,10 +398,12 @@ function renderSent() {
 function tab(name) {
   for (const b of document.querySelectorAll('nav button')) b.setAttribute('aria-selected', String(b.dataset.tab === name))
   for (const s of document.querySelectorAll('section')) s.hidden = s.id !== `tab-${name}`
+  $('compactTitle').textContent = $(`tab-${name}`).dataset.title
   scrollTo({ top: 0 })
   if (name !== 'receive') stopScan()
 }
 for (const b of document.querySelectorAll('nav button')) b.onclick = () => tab(b.dataset.tab)
+addEventListener('scroll', () => $('navbar').classList.toggle('scrolled', scrollY > 40), { passive: true })
 
 $('chainSel').onchange = (e) => { chainId = Number(e.target.value); store.set('chain', chainId); online = false; renderWallet(); probe() }
 $('gateway').onchange = (e) => store.set('gateway', e.target.value.trim())
@@ -341,4 +416,4 @@ $('importKey').onclick = () => {
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {})
 
-renderWallet(); renderInbox(); renderSent(); handleHash(); probe()
+renderWallet(); renderInbox(); renderSent(); renderAvail(); handleHash(); probe()

@@ -2,286 +2,290 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>ArcDrop</title>
 <meta name="description" content="Paie en USDC sans réseau. QR, AirDrop ou Bluetooth, réglé sur Arc.">
-<meta name="theme-color" content="#0E0F13" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#EEF1F6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F2F2F7" media="(prefers-color-scheme: light)">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
 <style>
-  /* ---------- tokens ---------- */
+  /* iOS system palette. Glass is reserved for what floats: bars, the tab bar, toasts. */
   :root {
-    --accent: #1FA8E8; --accent-strong: #0E8FD0; --accent-soft: rgba(31,168,232,.16); --on-accent: #fff;
-    --money: #2FBF71; --money-soft: rgba(47,191,113,.16); --warn: #F59E0B; --warn-soft: rgba(245,158,11,.16);
-    --danger: #FF453A; --danger-soft: rgba(255,69,58,.14);
-    --bg: #EEF1F6; --surface: #fff; --text: #0E1116; --text-2: #5B6472; --text-3: #8A93A1; --sep: rgba(14,17,22,.08);
-    --wallpaper: radial-gradient(110% 55% at 0% 0%, rgba(31,168,232,.22), transparent 60%),
-                 radial-gradient(90% 50% at 100% 100%, rgba(47,191,113,.16), transparent 60%), #E9EDF4;
-    --glass: rgba(255,255,255,.6); --glass-strong: rgba(255,255,255,.8); --glass-border: rgba(255,255,255,.75);
-    --glass-edge: rgba(14,17,22,.06); --glass-shine: linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,0) 55%);
-    --blur: blur(20px) saturate(180%); --blur-heavy: blur(32px) saturate(190%);
-    --r-sm: 14px; --r-md: 18px; --r-lg: 22px; --r-xl: 28px; --r-pill: 999px;
-    --shadow-sm: 0 1px 2px rgba(14,17,22,.06), 0 2px 8px rgba(14,17,22,.05);
-    --shadow-md: 0 10px 28px rgba(14,17,22,.10), 0 2px 6px rgba(14,17,22,.06);
-    --shadow-lg: 0 24px 60px rgba(14,17,22,.18), 0 6px 16px rgba(14,17,22,.08);
-    --font: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --accent: #2196F3; --accent-press: #1A7FD1; --accent-soft: rgba(33,150,243,.12);
+    --green: #34C759; --orange: #FF9500; --red: #FF3B30;
+    --bg: #F2F2F7; --cell: #FFFFFF; --cell-press: #E5E5EA;
+    --label: #000; --label-2: rgba(60,60,67,.6); --label-3: rgba(60,60,67,.3);
+    --sep: rgba(60,60,67,.29); --fill: rgba(118,118,128,.12);
+    --glass: rgba(249,249,249,.72); --glass-border: rgba(255,255,255,.6); --glass-shadow: 0 8px 32px rgba(0,0,0,.12), 0 1px 3px rgba(0,0,0,.06);
+    --blur: blur(24px) saturate(180%);
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    --round: ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
-    --ease: cubic-bezier(.22,1,.36,1); --spring: cubic-bezier(.34,1.56,.64,1);
+    --ease: cubic-bezier(.32,.72,0,1);
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-    --bg: #0E0F13; --surface: #16181E; --text: #F2F4F8; --text-2: #A3ABB8; --text-3: #6E7685; --sep: rgba(255,255,255,.07);
-    --wallpaper: radial-gradient(110% 55% at 0% 0%, rgba(31,168,232,.20), transparent 60%),
-                 radial-gradient(90% 50% at 100% 100%, rgba(47,191,113,.12), transparent 60%), #0B0C10;
-    --glass: rgba(255,255,255,.08); --glass-strong: rgba(28,31,38,.78); --glass-border: rgba(255,255,255,.12);
-    --glass-edge: rgba(0,0,0,.4); --glass-shine: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,0) 50%);
-    --shadow-sm: 0 1px 2px rgba(0,0,0,.4), 0 2px 8px rgba(0,0,0,.3);
-    --shadow-md: 0 10px 30px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.3);
-    --shadow-lg: 0 30px 70px rgba(0,0,0,.6), 0 8px 20px rgba(0,0,0,.35);
+    --accent: #3AA6F5; --accent-press: #2B8FD9; --accent-soft: rgba(58,166,245,.16);
+    --green: #30D158; --orange: #FF9F0A; --red: #FF453A;
+    --bg: #000; --cell: #1C1C1E; --cell-press: #2C2C2E;
+    --label: #fff; --label-2: rgba(235,235,245,.6); --label-3: rgba(235,235,245,.3);
+    --sep: rgba(84,84,88,.6); --fill: rgba(118,118,128,.24);
+    --glass: rgba(30,30,32,.7); --glass-border: rgba(255,255,255,.1); --glass-shadow: 0 8px 32px rgba(0,0,0,.5), 0 1px 3px rgba(0,0,0,.3);
     color-scheme: dark;
   } }
 
-  /* ---------- base ---------- */
-  * { box-sizing: border-box; }
-  html, body { margin: 0; min-height: 100%; }
-  body {
-    background: var(--wallpaper); background-attachment: fixed; color: var(--text);
-    font: 400 15px/1.4 var(--font); -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent;
-    padding: calc(env(safe-area-inset-top) + 8px) 16px calc(env(safe-area-inset-bottom) + 112px);
-    max-width: 480px; margin: 0 auto;
-  }
-  button, input, textarea, select { font: inherit; color: inherit; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--label); }
+  body { font: 17px/1.29 var(--font); letter-spacing: -.02em; -webkit-font-smoothing: antialiased; min-height: 100dvh;
+    padding: 0 0 calc(env(safe-area-inset-bottom) + 96px); max-width: 520px; margin: 0 auto; }
+  button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
   button { cursor: pointer; border: 0; background: none; padding: 0; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  a { color: var(--accent); text-decoration: none; font-weight: 500; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
   [hidden] { display: none !important; }
-  .pressable { transition: transform .16s var(--ease), opacity .16s var(--ease); }
-  .pressable:active { transform: scale(.95); opacity: .85; }
   svg.i { width: 22px; height: 22px; display: block; flex: none; }
-  .muted { color: var(--text-3); font-size: 13px; }
+  a { color: var(--accent); text-decoration: none; }
 
-  /* ---------- liquid glass ---------- */
-  .glass {
-    position: relative; background: var(--glass);
-    -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-    border: 1px solid var(--glass-border);
-    box-shadow: var(--shadow-md), inset 0 0 0 .5px var(--glass-edge);
-  }
-  .glass::before {
-    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-    background: var(--glass-shine); opacity: .55; mix-blend-mode: soft-light;
-  }
-  .glass > * { position: relative; }
-  .glass.strong { background: var(--glass-strong); -webkit-backdrop-filter: var(--blur-heavy); backdrop-filter: var(--blur-heavy); }
-  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background: var(--surface); } }
+  /* ---------- glass ---------- */
+  .glass { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+    border: .5px solid var(--glass-border); box-shadow: var(--glass-shadow); }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background: var(--cell); } }
 
-  /* ---------- header ---------- */
-  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 2px 6px; }
-  .brand { display: flex; align-items: center; gap: 10px; }
-  .brand-mark { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center;
-    background: linear-gradient(145deg, #5AC8FA, var(--accent-strong)); box-shadow: 0 6px 16px rgba(31,168,232,.35), inset 0 1px 0 rgba(255,255,255,.35); }
-  .brand h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
-  .net { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: var(--r-pill); font-size: 12px; font-weight: 500; color: var(--text-2); box-shadow: var(--shadow-sm); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
-  .dot.on { background: var(--money); box-shadow: 0 0 0 3px var(--money-soft); }
-  .peers { color: var(--accent); font-weight: 600; } .peers::before { content: "· "; color: var(--text-3); font-weight: 400; }
+  /* ---------- nav bar: compact title appears once the large title scrolls away ---------- */
+  .navbar { position: sticky; top: 0; z-index: 10; height: calc(env(safe-area-inset-top) + 52px);
+    padding: env(safe-area-inset-top) 16px 0; display: flex; align-items: center; justify-content: flex-end;
+    transition: background .25s, border-color .25s; border-bottom: .5px solid transparent; }
+  .navbar.scrolled { background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-bottom-color: var(--sep); }
+  .navbar .compact { position: absolute; left: 50%; transform: translateX(-50%); bottom: 15px; font-size: 17px; font-weight: 600; opacity: 0; transition: opacity .2s; }
+  .navbar.scrolled .compact { opacity: 1; }
+  .status { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 15px;
+    font-size: 13px; font-weight: 500; color: var(--label-2); background: var(--fill); letter-spacing: 0; }
+  .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--orange); }
+  .status .dot.on { background: var(--green); }
+  .status .peers { color: var(--accent); }
+  .large { font-size: 34px; font-weight: 700; letter-spacing: .01em; margin: 2px 16px 12px; line-height: 1.2; }
 
-  h2 { font-size: 32px; font-weight: 700; letter-spacing: -.02em; margin: 18px 2px 4px; }
-  .lede { margin: 0 2px 18px; color: var(--text-2); }
-  h3 { font-size: 13px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; margin: 26px 6px 10px; }
+  /* ---------- grouped lists ---------- */
+  .group { margin: 0 16px 8px; background: var(--cell); border-radius: 26px; overflow: hidden; }
+  .group-title { font-size: 13px; text-transform: uppercase; color: var(--label-2); margin: 26px 32px 7px; letter-spacing: 0; }
+  .footnote { font-size: 13px; color: var(--label-2); margin: 7px 32px 0; line-height: 1.38; letter-spacing: 0; }
+  .cell { position: relative; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 10px 16px; text-align: left; }
+  button.cell:active { background: var(--cell-press); }
+  .cell + .cell::before { content: ""; position: absolute; top: 0; right: 0; left: var(--inset, 16px); border-top: .5px solid var(--sep); }
+  .cell.has-icon { --inset: 60px; }
+  .tile { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: #fff; flex: none; }
+  .tile svg { width: 19px; height: 19px; }
+  .cell-main { flex: 1; min-width: 0; }
+  .cell-sub { font-size: 15px; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chev { color: var(--label-3); width: 14px; height: 14px; flex: none; }
+  .cell input, .cell select, .cell textarea { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 4px 0; }
+  .cell select { appearance: none; -webkit-appearance: none; text-align: right; text-align-last: right; color: var(--label-2); }
+  .cell input::placeholder, .cell textarea::placeholder { color: var(--label-3); }
+  .cell textarea { resize: none; }
+  .mono { font-family: var(--mono); font-size: 14px; letter-spacing: 0; }
+  .accent-text { color: var(--accent); }
 
-  /* ---------- cards & fields ---------- */
-  .card { border-radius: var(--r-xl); padding: 18px; margin-bottom: 12px; }
-  .field { display: flex; align-items: center; gap: 8px; border-radius: var(--r-md); padding: 6px 6px 6px 14px; box-shadow: var(--shadow-sm); }
-  .field input, .field select { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; padding: 10px 0; font-size: 15px; }
-  .field input::placeholder { color: var(--text-3); }
-  .field input.mono { font-family: var(--mono); font-size: 13px; }
-  label.lbl { display: block; font-size: 13px; color: var(--text-2); margin: 14px 6px 6px; font-weight: 500; }
-  textarea { width: 100%; border: 0; outline: 0; background: transparent; resize: none; padding: 12px 14px; font-family: var(--mono); font-size: 12px; }
+  /* ---------- pay: amount + keypad ---------- */
+  .amount { text-align: center; padding: 10px 16px 4px; }
+  .amount-line { display: flex; justify-content: center; align-items: baseline; gap: 6px; }
+  .amount input { width: 1ch; border: 0; outline: 0; background: transparent; text-align: center; padding: 0; caret-color: transparent;
+    font: 600 64px/1.1 var(--round); letter-spacing: -.02em; color: var(--label); pointer-events: none; }
+  .amount input::placeholder { color: var(--label); }
+  .amount .unit { font: 600 24px var(--round); color: var(--label-2); }
+  .amount.shake { animation: shake .35s; }
+  .avail { font-size: 15px; color: var(--label-2); margin-top: 2px; min-height: 20px; letter-spacing: 0; }
+  @keyframes shake { 20%, 60% { transform: translateX(-8px); } 40%, 80% { transform: translateX(8px); } }
 
-  .amount-card { text-align: center; padding: 26px 18px 20px; }
-  .amount { display: flex; align-items: baseline; justify-content: center; gap: 8px; }
-  .amount input { width: 1.2ch; min-width: 1.2ch; max-width: 100%; border: 0; outline: 0; background: transparent; text-align: center;
-    font-size: 56px; font-weight: 700; letter-spacing: -.03em; caret-color: var(--accent); padding: 0; }
-  .amount input::placeholder { color: var(--text-3); }
-  .amount span { font-size: 20px; font-weight: 600; color: var(--text-2); }
-  .quick { display: flex; justify-content: center; gap: 8px; margin-top: 14px; }
-  .quick button { height: 32px; padding: 0 14px; border-radius: var(--r-pill); font-size: 13px; font-weight: 600; color: var(--text-2); background: var(--sep); }
+  .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 10px 16px 0; }
+  .keypad button { height: 56px; border-radius: 16px; font: 500 28px var(--round); display: grid; place-items: center; transition: background .12s; }
+  .keypad button:active { background: var(--fill); }
 
-  .btn { height: 52px; width: 100%; border-radius: var(--r-pill); font-weight: 600; font-size: 16px; display: flex; align-items: center; justify-content: center; gap: 8px; }
-  .btn.primary { margin-top: 16px; color: var(--on-accent); background: linear-gradient(180deg, #45BCF2, var(--accent-strong));
-    box-shadow: 0 10px 24px rgba(31,168,232,.35), inset 0 1px 0 rgba(255,255,255,.35); }
-  .btn.ghost { height: 46px; font-size: 15px; box-shadow: var(--shadow-sm); }
-  .icon-btn { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); }
-  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .primary { display: flex; align-items: center; justify-content: center; gap: 8px; width: calc(100% - 32px); margin: 12px 16px 0; height: 54px;
+    border-radius: 27px; background: var(--accent); color: #fff; font-weight: 600; transition: transform .15s var(--ease), background .15s; }
+  .primary:active { transform: scale(.97); background: var(--accent-press); }
 
-  /* ---------- signed payment sheet ---------- */
-  .sheet { border-radius: var(--r-xl); padding: 20px; margin-top: 16px; animation: rise .45s var(--spring) both; }
-  .sheet-head { display: flex; justify-content: space-between; align-items: center; }
-  .pill { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: var(--r-pill); font-size: 12px; font-weight: 600; }
-  .pill.pending { color: var(--warn); background: var(--warn-soft); }
-  .pill.settled { color: var(--money); background: var(--money-soft); }
-  .pill.failed { color: var(--danger); background: var(--danger-soft); }
-  .big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; margin: 8px 0 2px; }
-  .addr { font-family: var(--mono); font-size: 12px; color: var(--text-2); word-break: break-all; }
-  .qr { background: #fff; padding: 14px; border-radius: var(--r-lg); display: grid; place-items: center; margin: 16px 0; box-shadow: inset 0 0 0 1px rgba(14,17,22,.06); }
-  .qr img { width: 100%; max-width: 280px; height: auto; image-rendering: pixelated; }
+  /* ---------- sheet ---------- */
+  .scrim { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.35); opacity: 0; transition: opacity .35s var(--ease); }
+  .scrim.show { opacity: 1; }
+  .sheet { position: fixed; z-index: 31; left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 8px); max-width: 504px; margin: 0 auto;
+    border-radius: 38px; padding: 8px 20px 22px; max-height: calc(100dvh - env(safe-area-inset-top) - 24px); overflow-y: auto;
+    transform: translateY(115%); transition: transform .45s var(--ease); background: var(--cell); box-shadow: 0 -10px 40px rgba(0,0,0,.2); }
+  .sheet.show { transform: none; }
+  .grabber { width: 36px; height: 5px; border-radius: 3px; background: var(--label-3); margin: 0 auto 10px; }
+  .sheet-top { display: flex; justify-content: space-between; align-items: center; }
+  .close { width: 30px; height: 30px; border-radius: 50%; background: var(--fill); color: var(--label-2); display: grid; place-items: center; }
+  .close svg { width: 13px; height: 13px; }
+  .pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+  .pill.pending { color: var(--orange); background: color-mix(in srgb, var(--orange) 15%, transparent); }
+  .pill.settled { color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent); }
+  .pill.failed { color: var(--red); background: color-mix(in srgb, var(--red) 15%, transparent); }
+  .sheet .big { font: 600 44px/1.1 var(--round); text-align: center; margin: 12px 0 4px; }
+  .sheet .to { text-align: center; color: var(--label-2); font-size: 13px; }
+  .qr { background: #fff; border-radius: 22px; padding: 14px; display: grid; place-items: center; margin: 16px auto; width: min(100%, 260px); }
+  .qr img { width: 100%; height: auto; image-rendering: pixelated; display: block; }
   .transports { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .transports button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 6px 12px; border-radius: var(--r-lg); font-size: 13px; font-weight: 600; box-shadow: var(--shadow-sm); }
-  .transports .ic { width: 40px; height: 40px; border-radius: 14px; display: grid; place-items: center; color: #fff; }
-  .hint { margin: 14px 2px 0; font-size: 13px; color: var(--text-2); }
-  @keyframes rise { from { opacity: 0; transform: translateY(16px) scale(.98); } }
+  .transports button { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 13px; color: var(--label-2); letter-spacing: 0; }
+  .transports .tile { width: 58px; height: 58px; border-radius: 18px; transition: transform .15s var(--ease); }
+  .transports .tile svg { width: 28px; height: 28px; }
+  .transports button:active .tile { transform: scale(.92); }
+  .sheet .footnote { margin: 16px 4px 0; text-align: center; }
 
-  /* ---------- lists ---------- */
-  .list { border-radius: var(--r-xl); overflow: hidden; }
-  .tx { padding: 14px 16px; }
-  .tx + .tx { border-top: 1px solid var(--sep); }
-  .tx-top { display: flex; align-items: center; gap: 12px; }
-  .tx-ic { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--money); background: var(--money-soft); }
+  /* ---------- receive ---------- */
+  .qr-card { margin: 0 16px; background: var(--cell); border-radius: 26px; padding: 20px; text-align: center; }
+  .qr-card .qr { margin: 0 auto 14px; box-shadow: inset 0 0 0 .5px var(--sep); }
+  .addr-row { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 14px; border-radius: 18px; background: var(--fill); font-family: var(--mono); font-size: 13px; color: var(--label-2); letter-spacing: 0; }
+  .addr-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .addr-row svg { width: 16px; height: 16px; color: var(--accent); flex: none; }
+  .addr-row:active { opacity: .6; }
+  video { display: block; width: calc(100% - 32px); margin: 12px 16px 0; border-radius: 26px; background: #000; aspect-ratio: 1; object-fit: cover; }
+
+  /* ---------- payments ---------- */
+  .tx-ic { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+  .tx-ic svg { width: 20px; height: 20px; }
+  .tx-ic.in { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
   .tx-ic.out { color: var(--accent); background: var(--accent-soft); }
-  .tx-ic.relay { color: var(--text-2); background: var(--sep); }
-  .tx-main { flex: 1; min-width: 0; }
-  .tx-amt { font-weight: 700; font-size: 17px; }
-  .tx-sub { font-size: 12px; color: var(--text-3); }
-  .steps { list-style: none; margin: 12px 0 0 52px; padding: 0; font-size: 13px; }
-  .steps li { position: relative; padding: 3px 0 3px 20px; color: var(--text-3); }
-  .steps li::before { content: ""; position: absolute; left: 2px; top: 9px; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; }
-  .steps li.done { color: var(--text); } .steps li.done::before { background: var(--money); border-color: var(--money); }
-  .steps li.fail { color: var(--danger); } .steps li.fail::before { background: var(--danger); border-color: var(--danger); }
-  .note { margin: 6px 0 0 52px; font-size: 12px; color: var(--warn); }
-  .empty { padding: 26px 16px; text-align: center; color: var(--text-3); font-size: 14px; }
+  .tx-ic.relay { color: var(--label-2); background: var(--fill); }
+  .tx { --inset: 70px; }
+  .tx-end { text-align: right; flex: none; }
+  .tx-amt { font-weight: 600; }
+  .tx-amt.in { color: var(--green); }
+  .tx-state { font-size: 13px; color: var(--label-2); letter-spacing: 0; }
+  .tx-state.pending { color: var(--orange); }
+  .tx-state.failed { color: var(--red); }
+  .details { padding: 0 16px 14px 70px; font-size: 15px; color: var(--label-2); }
+  .details ol { list-style: none; margin: 0; padding: 0; }
+  .details li { position: relative; padding: 3px 0 3px 18px; }
+  .details li::before { content: ""; position: absolute; left: 0; top: 10px; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--label-3); }
+  .details li.done { color: var(--label); } .details li.done::before { background: var(--green); border-color: var(--green); }
+  .details li.fail { color: var(--red); } .details li.fail::before { background: var(--red); border-color: var(--red); }
+  .details .note { color: var(--orange); font-size: 13px; margin-top: 4px; }
+  .empty { padding: 18px 16px; text-align: center; color: var(--label-2); font-size: 15px; }
 
   /* ---------- wallet ---------- */
-  .balance-card { border-radius: var(--r-xl); padding: 22px; color: #fff; overflow: hidden; position: relative;
-    background: linear-gradient(145deg, #3DB8F0, #0B7FC0 55%, #0A5E8F); box-shadow: 0 18px 40px rgba(14,143,208,.35); }
-  .balance-card::after { content: ""; position: absolute; inset: 0; background: radial-gradient(70% 60% at 85% 0%, rgba(255,255,255,.35), transparent 60%); pointer-events: none; }
-  .balance-card .lbl2 { font-size: 13px; opacity: .85; font-weight: 500; }
-  .balance-card .bal { font-size: 42px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 14px; }
-  .balance-card .addr { color: rgba(255,255,255,.85); }
-  .warn { border-radius: var(--r-lg); padding: 12px 14px; font-size: 13px; color: var(--warn); background: var(--warn-soft); margin: 12px 0; }
-  select { appearance: none; -webkit-appearance: none; }
-
-  video { width: 100%; border-radius: var(--r-lg); background: #000; margin-top: 12px; }
+  .balance { text-align: center; padding: 4px 16px 20px; }
+  .balance .lbl { font-size: 15px; color: var(--label-2); }
+  .balance .bal { font: 600 52px/1.15 var(--round); letter-spacing: -.02em; margin: 2px 0 12px; }
 
   /* ---------- tab bar ---------- */
-  nav.glass { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 14px);
-    width: min(360px, calc(100% - 32px)); height: 64px; border-radius: var(--r-pill); padding: 6px; z-index: 20; }
-  nav .tabs { display: grid; grid-template-columns: repeat(3, 1fr); height: 100%; }
-  nav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: var(--r-pill); color: var(--text-2); font-size: 11px; font-weight: 600; }
-  nav button[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
+  nav.tabbar { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 10px);
+    width: min(330px, calc(100% - 48px)); height: 62px; border-radius: 31px; padding: 4px; display: grid; grid-template-columns: repeat(3, 1fr); }
+  nav.tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    border-radius: 27px; font-size: 10px; font-weight: 600; color: var(--label); letter-spacing: 0; transition: color .2s, background .2s; }
+  nav.tabbar button svg { width: 26px; height: 26px; }
+  nav.tabbar button[aria-selected="true"] { color: var(--accent); background: var(--fill); }
 
-  section { animation: fadeSlide .32s var(--ease); }
-  @keyframes fadeSlide { from { opacity: 0; transform: translateY(10px); } }
+  section { animation: appear .3s var(--ease); }
+  @keyframes appear { from { opacity: 0; transform: translateY(6px); } }
 
-  .toast { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 12px); transform: translate(-50%, -16px);
-    max-width: calc(100vw - 32px); padding: 12px 16px; border-radius: var(--r-lg); font-size: 14px; font-weight: 500; text-align: center;
-    opacity: 0; pointer-events: none; z-index: 40; transition: opacity .3s var(--ease), transform .3s var(--ease); }
-  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast { position: fixed; z-index: 40; left: 50%; top: calc(env(safe-area-inset-top) + 8px); transform: translate(-50%, -160%);
+    width: max-content; max-width: calc(100vw - 32px); padding: 12px 18px; border-radius: 22px; font-size: 15px; font-weight: 500; text-align: center;
+    transition: transform .45s var(--ease); pointer-events: none; }
+  .toast.show { transform: translate(-50%, 0); }
 
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
 </style>
 </head>
 <body>
-<header>
-  <div class="brand">
-    <div class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M4 16a8 8 0 0 1 16 0"/><path d="M8 16a4 4 0 0 1 8 0"/><circle cx="12" cy="16" r="1.2" fill="#fff"/></svg></div>
-    <h1>ArcDrop</h1>
-  </div>
-  <div class="net glass" role="status"><span id="netDot" class="dot"></span><span id="netLabel">hors ligne</span><span aria-hidden="true">·</span><span id="chainLabel"></span><span id="meshPeers" class="peers" hidden></span></div>
-</header>
+<div class="navbar" id="navbar">
+  <span class="compact" id="compactTitle">Payer</span>
+  <div class="status" role="status"><span id="netDot" class="dot"></span><span id="netLabel">hors ligne</span><span id="chainLabel" hidden></span><span id="meshPeers" class="peers" hidden></span></div>
+</div>
 
 <!-- PAYER -->
-<section id="tab-pay" aria-labelledby="payTitle">
-  <h2 id="payTitle">Payer</h2>
-  <p class="lede">Marche en mode avion.</p>
-
-  <div class="card glass amount-card">
-    <label for="payAmount" class="muted">Montant</label>
-    <div class="amount"><input id="payAmount" inputmode="decimal" placeholder="0" autocomplete="off"><span>USDC</span></div>
-    <div class="quick">
-      <button class="pressable" data-amount="5">5</button>
-      <button class="pressable" data-amount="10">10</button>
-      <button class="pressable" data-amount="20">20</button>
-      <button class="pressable" data-amount="50">50</button>
-    </div>
+<section id="tab-pay" data-title="Payer">
+  <h1 class="large">Payer</h1>
+  <div class="amount" id="amountBox">
+    <div class="amount-line"><input id="payAmount" placeholder="0" readonly inputmode="none" tabindex="-1" aria-label="Montant en USDC"><span class="unit">USDC</span></div>
+    <div class="avail" id="avail"></div>
   </div>
 
-  <label class="lbl" for="payTo">Destinataire</label>
-  <div class="field glass">
-    <input id="payTo" class="mono" placeholder="0x… ou scanne son QR" autocomplete="off" spellcheck="false">
-    <button id="scanTo" class="icon-btn pressable" aria-label="Scanner l'adresse du destinataire"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></button>
+  <div class="group" style="margin-top:12px">
+    <label class="cell">
+      <span style="flex:none">À</span>
+      <input id="payTo" class="mono" placeholder="Adresse 0x… ou scanne" autocomplete="off" spellcheck="false">
+      <button id="scanTo" type="button" class="accent-text" aria-label="Scanner l'adresse"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></button>
+    </label>
   </div>
 
-  <button id="signBtn" class="btn primary pressable">Signer le paiement</button>
-
-  <div id="payOut" class="sheet glass strong" hidden>
-    <div class="sheet-head"><span class="muted">Signé hors ligne</span><span class="pill pending">en attente</span></div>
-    <div class="big" id="outAmount"></div>
-    <div class="addr" id="outTo"></div>
-    <div class="qr" id="outQr"></div>
-    <div class="transports">
-      <button id="tQr" class="glass pressable"><span class="ic" style="background:linear-gradient(145deg,#8E8E93,#48484A)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/></svg></span>QR code</button>
-      <button id="tShare" class="glass pressable"><span class="ic" style="background:linear-gradient(145deg,#5AC8FA,#1FA8E8)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 13a7 7 0 0 1 14 0M8.5 13a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="13" r="1" fill="currentColor"/><path d="M12 17v3"/></svg></span>AirDrop</button>
-      <button id="tMesh" class="glass pressable"><span class="ic" style="background:linear-gradient(145deg,#64D2FF,#0A84FF)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg></span>Bluetooth</button>
-    </div>
-    <p class="hint" id="transportHint">Ton pote scanne le QR, ou envoie par AirDrop. Personne n'a besoin de réseau : le premier qui capte règle le paiement sur Arc.</p>
+  <div class="keypad" id="keypad" role="group" aria-label="Pavé numérique">
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+    <button data-k=",">,</button><button data-k="0">0</button>
+    <button data-k="del" aria-label="Effacer"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1Z"/><path d="m16 10-4 4M12 10l4 4"/></svg></button>
   </div>
+  <button id="signBtn" class="primary">Signer le paiement</button>
 </section>
 
 <!-- RECEVOIR -->
-<section id="tab-receive" aria-labelledby="recvTitle" hidden>
-  <h2 id="recvTitle">Recevoir</h2>
-  <p class="lede">Montre ce QR au payeur.</p>
-  <div class="card glass" style="text-align:center">
-    <div class="qr" id="myQr" style="margin-top:0"></div>
-    <div class="addr" id="myAddr2"></div>
-  </div>
-  <div class="row2">
-    <button id="scanPay" class="btn ghost glass pressable">Scanner un paiement</button>
-    <button id="pastePay" class="btn ghost glass pressable">Coller</button>
+<section id="tab-receive" data-title="Recevoir" hidden>
+  <h1 class="large">Recevoir</h1>
+  <div class="qr-card">
+    <div class="qr" id="myQr"></div>
+    <button class="addr-row" id="copyAddr" aria-label="Copier mon adresse"><span id="myAddr2"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
   </div>
   <video id="video" playsinline muted hidden></video>
-  <label class="lbl" for="pasteBox">Ou colle un paiement reçu</label>
-  <div class="glass" style="border-radius:var(--r-md)"><textarea id="pasteBox" rows="3" placeholder="arcdrop:1:…"></textarea></div>
-  <button id="importBtn" class="btn primary pressable">Ajouter</button>
-  <h3>Paiements reçus</h3>
-  <div id="inbox" class="list glass"></div>
+  <div class="group" style="margin-top:20px">
+    <button class="cell has-icon" id="scanPay"><span class="tile" style="background:#2196F3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg></span><span class="cell-main">Scanner un paiement</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <button class="cell has-icon" id="pastePay"><span class="tile" style="background:#FF9500"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg></span><span class="cell-main">Coller un paiement</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+  </div>
+  <div class="group" id="manual" hidden style="margin-top:8px">
+    <div class="cell"><textarea id="pasteBox" rows="3" class="mono" placeholder="arcdrop:1:…" aria-label="Paiement à coller"></textarea></div>
+    <button class="cell accent-text" id="importBtn" style="justify-content:center;font-weight:600">Ajouter</button>
+  </div>
+  <div class="group-title">Paiements reçus</div>
+  <div class="group" id="inbox"></div>
 </section>
 
 <!-- WALLET -->
-<section id="tab-wallet" aria-labelledby="walletTitle" hidden>
-  <h2 id="walletTitle">Wallet</h2>
-  <p class="lede">Tes USDC sur Arc.</p>
-  <div class="balance-card">
-    <div class="lbl2">Solde disponible</div>
+<section id="tab-wallet" data-title="Wallet" hidden>
+  <h1 class="large">Wallet</h1>
+  <div class="balance">
+    <div class="lbl">Solde</div>
     <div class="bal" id="balance">—</div>
-    <div class="addr" id="myAddr"></div>
+    <button class="addr-row" id="copyAddr2" aria-label="Copier mon adresse"><span id="myAddr"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
   </div>
-  <div class="warn">Démo : la clé vit dans ce navigateur. N'y mets que quelques dollars.</div>
-  <label class="lbl" for="chainSel">Réseau</label>
-  <div class="field glass"><select id="chainSel"><option value="5042002">Arc testnet</option><option value="5042">Arc mainnet</option></select></div>
-  <label class="lbl" for="gateway">Passerelle de règlement (optionnelle)</label>
-  <div class="field glass"><input id="gateway" class="mono" placeholder="vide = ce site"></div>
-  <div class="row2" style="margin-top:14px">
-    <button id="exportKey" class="btn ghost glass pressable">Exporter la clé</button>
-    <button id="importKey" class="btn ghost glass pressable">Importer une clé</button>
+  <div class="group">
+    <label class="cell has-icon"><span class="tile" style="background:#5856D6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span><span style="flex:none">Réseau</span>
+      <select id="chainSel"><option value="5042002">Arc testnet</option><option value="5042">Arc mainnet</option></select></label>
+    <label class="cell has-icon"><span class="tile" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg></span><span style="flex:none">Passerelle</span>
+      <input id="gateway" placeholder="ce site" style="text-align:right;color:var(--label-2)" autocomplete="off"></label>
   </div>
-  <h3>Paiements envoyés</h3>
-  <div id="sent" class="list glass"></div>
+  <div class="group" style="margin-top:20px">
+    <button class="cell has-icon" id="exportKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/></svg></span><span class="cell-main">Exporter la clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+    <button class="cell has-icon" id="importKey"><span class="tile" style="background:#8E8E93"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></span><span class="cell-main">Importer une clé</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+  </div>
+  <p class="footnote">Démo : la clé vit sur cet appareil. N'y garde que quelques dollars.</p>
+  <div class="group-title">Paiements envoyés</div>
+  <div class="group" id="sent"></div>
 </section>
 
-<nav class="glass strong" aria-label="Navigation principale">
-  <div class="tabs" role="tablist">
-    <button role="tab" data-tab="pay" aria-selected="true" class="pressable"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>Payer</button>
-    <button role="tab" data-tab="receive" aria-selected="false" class="pressable"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>Recevoir</button>
-    <button role="tab" data-tab="wallet" aria-selected="false" class="pressable"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18M16 15h2"/></svg>Wallet</button>
+<!-- signed payment sheet -->
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="payOut" role="dialog" aria-modal="true" aria-labelledby="outAmount" hidden>
+  <div class="grabber"></div>
+  <div class="sheet-top"><span class="pill pending">Signé · en attente</span>
+    <button class="close" id="closeSheet" aria-label="Fermer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+  <div class="big" id="outAmount"></div>
+  <div class="to mono" id="outTo"></div>
+  <div class="qr" id="outQr"></div>
+  <div class="transports">
+    <button id="tQr"><span class="tile" style="background:linear-gradient(180deg,#8E8E93,#636366)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2"/></svg></span>QR code</button>
+    <button id="tShare"><span class="tile" style="background:linear-gradient(180deg,#5AC8FA,#2196F3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 13a7 7 0 0 1 14 0M8.5 13a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="13" r="1" fill="currentColor"/></svg></span>AirDrop</button>
+    <button id="tMesh"><span class="tile" style="background:linear-gradient(180deg,#64D2FF,#0A84FF)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg></span>Bluetooth</button>
   </div>
+  <p class="footnote" id="transportHint">Aucun réseau nécessaire. Le premier appareil qui capte règle le paiement sur Arc.</p>
+</div>
+
+<nav class="tabbar glass" aria-label="Navigation principale" role="tablist">
+  <button role="tab" data-tab="pay" aria-selected="true"><svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.2 9.2a1 1 0 0 1-1.4 0L13 9.4V16a1 1 0 1 1-2 0V9.4l-1.8 1.8a1 1 0 1 1-1.4-1.4l3.5-3.5a1 1 0 0 1 1.4 0l3.5 3.5a1 1 0 0 1 0 1.4Z"/></svg>Payer</button>
+  <button role="tab" data-tab="receive" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20Zm4.2-9.2a1 1 0 0 0-1.4 0L13 14.6V8a1 1 0 1 0-2 0v6.6l-1.8-1.8a1 1 0 1 0-1.4 1.4l3.5 3.5a1 1 0 0 0 1.4 0l3.5-3.5a1 1 0 0 0 0-1.4Z"/></svg>Recevoir</button>
+  <button role="tab" data-tab="wallet" aria-selected="false"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="2.5" y="5" width="19" height="15" rx="3.5"/><rect x="2.5" y="8" width="19" height="2.5" fill="var(--bg)" opacity=".35"/><circle cx="17" cy="14.5" r="1.6" fill="var(--bg)"/></svg>Wallet</button>
 </nav>
-<div class="toast glass strong" id="toast" role="status" aria-live="polite"></div>
+<div class="toast glass" id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>
