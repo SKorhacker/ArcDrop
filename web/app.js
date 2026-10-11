@@ -276,6 +276,14 @@ $('tabsList').addEventListener('click', async (e) => {
   } catch (err) { toast(`Impossible : ${err.shortMessage ?? err.message}`.slice(0, 90)) }
 })
 
+function setToken(t) {
+  token = t
+  store.set('token', t)
+  $('unitLabel').textContent = symbol(t)
+  renderBalances()
+}
+$('unitBtn').onclick = () => { setToken(1 - token); haptic('light') }
+
 // ---------- connectivity ----------
 let online = false
 async function probe() {

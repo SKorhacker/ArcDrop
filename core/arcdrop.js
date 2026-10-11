@@ -8,7 +8,7 @@
 
 import TABS from './tabs.json' with { type: 'json' }
 import {
-  createPublicClient, createWalletClient, http, defineChain, keccak256, encodeAbiParameters, encodePacked,
+  createPublicClient, createWalletClient, http, defineChain, keccak256, encodeAbiParameters,
   hexToBytes, bytesToHex, recoverTypedDataAddress, parseSignature, getAddress, parseEventLogs, parseAbiItem,
 } from 'viem'
 
@@ -80,7 +80,10 @@ export const TABS_ABI = [
   { type: 'function', name: 'close', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [] },
 ]
 // A tab voucher's identity (stands in for an EIP-3009 nonce: receipts, dedupe).
-const tabNonce = (p) => keccak256(encodePacked(['address', 'uint64', 'uint256'], [p.to, BigInt(p.epoch), BigInt(p.cumulative)]))
+const tabNonce = (p) => keccak256(encodeAbiParameters(
+  [{ type: 'uint256' }, { type: 'address' }, { type: 'address' }, { type: 'address' }, { type: 'uint64' }, { type: 'uint256' }],
+  [BigInt(p.chainId), tokenAddress(p.chainId, p.token), p.from, p.to, BigInt(p.epoch), BigInt(p.cumulative)],
+))
 
 const TYPES = {
   TransferWithAuthorization: [
@@ -222,7 +225,7 @@ export function decodePayment(text) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   let o = 0
   const token = v2 ? buf[o++] : 0
-  if (!TOKENS[token]) throw new Error('unknown token')
+  if (!TOKENS[token] || (v2 && token === 0)) throw new Error('unknown token') // USDC travels as v1 only
   const chainId = dv.getUint32(o); o += 4
   const from = getAddress(bytesToHex(buf.slice(o, o + 20))); o += 20
   const to = getAddress(bytesToHex(buf.slice(o, o + 20))); o += 20
@@ -305,9 +308,12 @@ export async function tabState(chainId, token, from, to, rpcUrl) {
 export async function checkPayment(p, { rpcUrl } = {}) {
   if (p.tab) {
     const t = await tabState(p.chainId, p.token, p.from, p.to, rpcUrl)
+    const sameEpoch = t.epoch === Number(p.epoch)
     const covered = BigInt(p.cumulative) < t.locked ? BigInt(p.cumulative) : t.locked
-    const live = t.epoch === Number(p.epoch) && t.expiry > Math.floor(Date.now() / 1000)
-    return { settled: t.epoch === Number(p.epoch) && t.paid >= covered && covered > 0n, payerBalance: t.locked - t.paid, funded: live && covered > t.paid, tab: t }
+    const live = sameEpoch && t.expiry > Math.floor(Date.now() / 1000)
+    // paidUpTo: how much of this running total has really been paid out to `to`.
+    const paidUpTo = sameEpoch ? (t.paid < BigInt(p.cumulative) ? t.paid : BigInt(p.cumulative)) : 0n
+    return { settled: sameEpoch && t.paid >= BigInt(p.cumulative), paidUpTo, payerBalance: t.locked - t.paid, funded: live && covered > t.paid, tab: t }
   }
   const client = publicClient(p.chainId, rpcUrl)
   const token = tokenAddress(p.chainId, p.token)
@@ -353,11 +359,18 @@ function receiptPays(receipt, p) {
     return parseEventLogs({ abi: [EV_TAB_REDEEMED], logs: receipt.logs.filter((l) => l.address.toLowerCase() === tabs) })
       .some((e) => e.args.token.toLowerCase() === token && getAddress(e.args.from) === p.from && getAddress(e.args.to) === p.to)
   }
-  const tokenLogs = receipt.logs.filter((l) => l.address.toLowerCase() === token)
-  const used = parseEventLogs({ abi: [EV_AUTH_USED], logs: tokenLogs }).some((e) => getAddress(e.args.authorizer) === p.from && e.args.nonce === p.nonce)
-  const moved = parseEventLogs({ abi: [EV_TRANSFER], logs: tokenLogs }).some((e) => getAddress(e.args.from) === p.from && getAddress(e.args.to) === p.to && e.args.value === p.value)
-  return used && moved
+  // The Transfer must be the one emitted by THIS authorization: the first token Transfer right
+  // after its AuthorizationUsed. Matching "a Transfer anywhere in the tx" would let one transfer
+  // pay for two packets (burn nonce A and pay with nonce B in a single transaction).
+  const tokenLogs = parseEventLogs({ abi: [EV_AUTH_USED, EV_TRANSFER], logs: receipt.logs.filter((l) => l.address.toLowerCase() === token) })
+    .sort((a, b) => a.logIndex - b.logIndex)
+  const i = tokenLogs.findIndex((e) => e.eventName === 'AuthorizationUsed' && getAddress(e.args.authorizer) === p.from && e.args.nonce === p.nonce)
+  if (i < 0) return false
+  const next = tokenLogs.slice(i + 1).find((e) => e.eventName === 'Transfer')
+  return !!next && getAddress(next.args.from) === p.from && getAddress(next.args.to) === p.to && next.args.value === p.value
 }
+
+export const _receiptPaysForTests = receiptPays
 
 // { paid: true, tx } | { paid: false, reason }. `txHash` (from our own settlement) is checked
 // first; otherwise the recent history is searched (`maxBlocks`, ~0.5 s per block on Arc).
@@ -366,8 +379,8 @@ export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl
   const explorer = (hash) => `${CHAINS[p.chainId].blockExplorers.default.url}/tx/${hash}`
   if (p.tab) {
     // Tab payouts can only reach `to`: the on-chain tab state is the proof.
-    const { settled } = await checkPayment(p, { rpcUrl })
-    if (!settled) return { paid: false, reason: 'tab has not paid this voucher' }
+    const { settled, paidUpTo } = await checkPayment(p, { rpcUrl })
+    if (!settled) return { paid: false, paidUpTo, reason: paidUpTo > 0n ? 'tab paid only part of this voucher' : 'tab has not paid this voucher' }
     if (txHash && /^0x[0-9a-fA-F]{64}$/.test(txHash)) {
       const r = await client.getTransactionReceipt({ hash: txHash }).catch(() => null)
       if (r && receiptPays(r, p)) return { paid: true, tx: explorer(txHash) }
@@ -388,7 +401,8 @@ export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl
       return { paid: false, reason: 'nonce used by another transaction' }
     }
   }
-  return { paid: false, reason: 'no matching payment found' }
+  // Nothing in the searched window: maybe settled earlier by someone else. Unknown, NOT fraud.
+  return { paid: false, unknown: true, reason: 'not found in recent history' }
 }
 
 // ---------- opening / topping up a tab ----------
@@ -439,14 +453,15 @@ export const signedAt = (p) => Number(p.validBefore) - PAYMENT_TTL
 // payment they sent.
 export const ACK_PREFIX = 'arcdrop-ack:2:'
 const RECEIPT_TYPES = {
-  Receipt: [
+  // Named so nobody can mistake it for proof of payment: it only says "this packet reached me".
+  DeliveryNoticeNotPayment: [
     { name: 'token', type: 'address' }, { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
     { name: 'value', type: 'uint256' }, { name: 'nonce', type: 'bytes32' }, { name: 'tab', type: 'bool' },
   ],
 }
 const receiptTyped = (p) => ({
-  domain: { name: 'ArcDrop Receipt', version: '1', chainId: p.chainId },
-  types: RECEIPT_TYPES, primaryType: 'Receipt',
+  domain: { name: 'ArcDrop delivery notice (not a payment receipt)', version: '1', chainId: p.chainId },
+  types: RECEIPT_TYPES, primaryType: 'DeliveryNoticeNotPayment',
   message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, value: p.value, nonce: p.nonce, tab: !!p.tab },
 })
 
@@ -481,7 +496,7 @@ export const REQ_PREFIX = 'arcdrop-req:1:'
 // never cut in the middle of a character.
 function cleanLabel(label) {
   let out = ''
-  for (const ch of String(label).replace(/[\p{Cc}\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, '').trim()) {
+  for (const ch of String(label).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034F\u061C\u115F\u1160\u3164\uFFA0]/gu, '').trim()) {
     if (new TextEncoder().encode(out + ch).length > 40) break
     out += ch
   }
@@ -510,6 +525,7 @@ export function decodeRequest(text) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
   const chainId = dv.getUint32(0), token = buf[4]
   if (!knownChain(chainId) || !knownToken(token)) return null
+  if (dv.getBigUint64(25) < 10_000n) return null // below 0.01: not a real request
   return {
     chainId, token, to: getAddress(bytesToHex(buf.slice(5, 25))),
     value: dv.getBigUint64(25), label: cleanLabel(new TextDecoder().decode(buf.slice(33))),

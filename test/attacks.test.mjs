@@ -82,15 +82,51 @@ const packet = encodePayment(p)
 // 7. Requests: garbage, unknown chains and hostile labels are neutralised.
 {
   assert.equal(decodeRequest('arcdrop-req:1:' + 'A'.repeat(41)), null)
-  assert.equal(decodeRequest(encodeRequest({ chainId: 5042002, to: payee.address, value: 1n }).replace('arcdrop-req:1:', 'arcdrop-req:1:x')), null)
+  assert.equal(decodeRequest(encodeRequest({ chainId: 5042002, to: payee.address, value: 20_000n }).replace('arcdrop-req:1:', 'arcdrop-req:1:x')), null)
+  assert.equal(decodeRequest(encodeRequest({ chainId: 5042002, to: payee.address, value: 1n })), null, 'dust request refused')
   const forged = Buffer.alloc(33); forged.writeUInt32BE(4294967295, 0)
   assert.equal(decodeRequest('arcdrop-req:1:' + b64(forged)), null)
-  const r = decodeRequest(encodeRequest({ chainId: 5042002, to: payee.address, value: 1n, label: '‮gnp.exe\u0007' + 'é'.repeat(40) }))
-  assert.ok(!/[‮\u0007]/.test(r.label), 'control / bidi characters stripped')
+  const r = decodeRequest(encodeRequest({ chainId: 5042002, to: payee.address, value: 20_000n, label: '\u202Egnp.exe\u0007\u061C\u200B\u2060\uFEFF\u2028\u034F' + 'é'.repeat(40) }))
+  assert.ok(!/[\u202E\u0007\u061C\u200B\u2060\uFEFF\u2028\u034F]/.test(r.label), 'control / bidi / invisible characters stripped')
   assert.ok(new TextEncoder().encode(r.label).length <= 40 && !r.label.includes('�'), 'label capped without broken characters')
   console.log('✓ hostile requests neutralised')
 }
 
-// 8. Payment links survive extraction exactly (no truncation games).
+// 8. USDC has exactly one encoding: a v2 packet with token byte 0 is refused.
+{
+  const raw = bytesOf(packet)
+  assert.throws(() => decodePayment(`arcdrop:2:${b64(Buffer.concat([Buffer.from([0]), raw]))}`), /unknown token/)
+  console.log('✓ no second encoding of USDC payments')
+}
+
+// 9. Tab voucher identities differ across token, payer and chain.
+{
+  const { createTabPayment } = await import('../core/arcdrop.js')
+  const other = privateKeyToAccount(generatePrivateKey())
+  const base = { to: payee.address, cumulative: 100_000n, epoch: 0, chainId: 5042002 }
+  const a = await createTabPayment({ ...base, account: payer, token: 0 })
+  const b = await createTabPayment({ ...base, account: payer, token: 1 })
+  const c = await createTabPayment({ ...base, account: other, token: 0 })
+  assert.equal(new Set([a.nonce, b.nonce, c.nonce]).size, 3)
+  console.log('✓ tab voucher identities are unique per token / payer')
+}
+
+// 10. One transfer can't pay for two packets: the transfer must follow its own authorization.
+{
+  const { _receiptPaysForTests: pays } = await import('../core/arcdrop.js')
+  const { encodeEventTopics, encodeAbiParameters, parseAbiItem } = await import('viem')
+  const USDC = '0x3600000000000000000000000000000000000000'
+  const used = (nonce, i) => ({ address: USDC, logIndex: i, data: '0x', topics: encodeEventTopics({ abi: [parseAbiItem('event AuthorizationUsed(address indexed authorizer, bytes32 indexed nonce)')], args: { authorizer: payer.address, nonce } }) })
+  const moved = (to, value, i) => ({ address: USDC, logIndex: i, data: encodeAbiParameters([{ type: 'uint256' }], [value]), topics: encodeEventTopics({ abi: [parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')], args: { from: payer.address, to } }) })
+  const p1 = await createPayment({ account: payer, to: payee.address, amount: '1', chainId: 5042002 })
+  const p2 = await createPayment({ account: payer, to: payee.address, amount: '1', chainId: 5042002 })
+  // one tx: burn p1's nonce with a 1-unit self-transfer, then settle p2
+  const receipt = { status: 'success', logs: [used(p1.nonce, 0), moved(payer.address, 1n, 1), used(p2.nonce, 2), moved(payee.address, 1_000_000n, 3)] }
+  assert.equal(pays(receipt, p2), true)
+  assert.equal(pays(receipt, p1), false, 'p1 must not borrow p2\'s transfer')
+  console.log('✓ a single transfer cannot settle two packets')
+}
+
+// 11. Payment links survive extraction exactly (no truncation games).
 assert.equal(extractPacket(`https://x/#p=${packet}&junk`), packet)
 console.log('all attack tests passed')
