@@ -56,7 +56,7 @@ export async function relay(text) {
     const started = Date.now()
     inflight.set(key, settlePayment(p, { relayerAccount: relayer, rpcUrl: RPC_URL })
       .then((r) => ({ ...r, settleMs: Date.now() - started }))
-      .finally(() => setTimeout(() => inflight.delete(key), 60_000)))
+      .finally(() => setTimeout(() => inflight.delete(key), 60_000).unref()))
   }
   const result = await inflight.get(key)
   console.log(`settled ${formatUsdc(p.value)} USDC ${p.from} -> ${p.to} in ${result.settleMs}ms ${result.url}`)

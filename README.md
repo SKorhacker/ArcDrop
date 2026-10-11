@@ -2,7 +2,7 @@
 
 **Pay in USDC with no internet. Carry the payment by QR code, AirDrop or Bluetooth mesh. It settles on Arc the moment any device gets a signal.**
 
-Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend: show a QR, AirDrop it, or drop it in [bitchat](https://github.com/permissionlesstech/bitchat), where it hops from phone to phone over Bluetooth. The first device in the chain that finds internet settles it on Arc, final in under a second.
+Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend: show a QR, AirDrop it, or drop it in [bitchat](https://github.com/permissionlesstech/bitchat), where it hops from phone to phone over Bluetooth. The first device in the chain that finds internet settles it on Arc, final in about a second.
 
 ## How it works
 

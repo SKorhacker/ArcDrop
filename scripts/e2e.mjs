@@ -1,7 +1,7 @@
 // Real end-to-end payment, the same path a phone takes: sign offline -> encode ->
 // carry as text -> gateway relay() -> settled on Arc. Uses the gateway wallet from
 // .env as the payer too, so a single faucet top-up is enough.
-//   node --env-file=.env scripts/e2e.mjs [testnet|mainnet] [amount]
+//   node --env-file=.env scripts/e2e.mjs [testnet|mainnet] [amount] [recipient]
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { createPayment, encodePayment, checkPayment, decodePayment, formatUsdc, publicClient, USDC, USDC_ABI } from '../core/arcdrop.js'
 import { relay } from '../relayer/server.mjs'
@@ -9,7 +9,7 @@ import { relay } from '../relayer/server.mjs'
 const chainId = (process.argv[2] ?? 'testnet') === 'mainnet' ? 5042 : 5042002
 const amount = process.argv[3] ?? '0.01'
 const payer = privateKeyToAccount(process.env.RELAYER_PRIVATE_KEY)
-const payee = privateKeyToAccount(generatePrivateKey()).address
+const payee = process.argv[4] ?? privateKeyToAccount(generatePrivateKey()).address
 
 const client = publicClient(chainId)
 const balance = await client.readContract({ address: USDC, abi: USDC_ABI, functionName: 'balanceOf', args: [payer.address] })

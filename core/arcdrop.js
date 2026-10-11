@@ -158,7 +158,8 @@ export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
 }
 
 export function publicClient(chainId, rpcUrl) {
-  return createPublicClient({ chain: CHAINS[chainId], transport: http(rpcUrl) })
+  // Arc finalizes in well under a second; viem's default 4 s polling would hide that.
+  return createPublicClient({ chain: CHAINS[chainId], transport: http(rpcUrl), pollingInterval: 150 })
 }
 
 function txArgs(p) {
@@ -189,7 +190,7 @@ export async function settlePayment(p, { relayerAccount, rpcUrl }) {
   const wallet = createWalletClient({ account: relayerAccount, chain, transport: http(rpcUrl) })
   const client = publicClient(p.chainId, rpcUrl)
   const hash = await wallet.writeContract({ address: USDC, abi: USDC_ABI, functionName: 'transferWithAuthorization', args: txArgs(p) })
-  const receipt = await client.waitForTransactionReceipt({ hash })
+  const receipt = await client.waitForTransactionReceipt({ hash, pollingInterval: 150 })
   return { hash, status: receipt.status, blockNumber: receipt.blockNumber, url: `${chain.blockExplorers.default.url}/tx/${hash}` }
 }
 
