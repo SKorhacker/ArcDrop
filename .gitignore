@@ -3,3 +3,6 @@ web/dist
 .env
 vendor/
 .vercel
+mesh/build
+ios-app/ArcDrop.xcodeproj/xcuserdata
+ios-app/ArcDrop.xcodeproj/project.xcworkspace/xcuserdata

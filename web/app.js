@@ -13,6 +13,9 @@ const store = {
   set(k, v) { try { localStorage.setItem('arcdrop.' + k, JSON.stringify(v)) } catch {} },
 }
 
+// Inside the iOS app, the native side injects this handler (Bluetooth mesh, share sheet).
+const mesh = globalThis.webkit?.messageHandlers?.arcmesh
+
 // ---------- wallet ----------
 let key = store.get('key')
 if (!key) { key = generatePrivateKey(); store.set('key', key) }
@@ -105,7 +108,7 @@ $('signBtn').onclick = async () => {
   if (value > available) return toast(`Solde hors ligne disponible : ${formatUsdc(available > 0n ? available : 0n)} USDC`)
   const p = await createPayment({ account, to, amount: value, chainId })
   const packet = encodePayment(p)
-  lastPayment = { p, packet, link: paymentLink(p, location.href) }
+  lastPayment = { p, packet, link: paymentLink(p, location.origin + location.pathname) }
   const sent = store.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending' })
   store.set('sent', sent)
@@ -124,6 +127,7 @@ $('tShare').onclick = async () => {
   if (!lastPayment) return
   const amount = formatUsdc(lastPayment.p.value)
   const data = { title: 'ArcDrop', text: `${amount} USDC pour toi via ArcDrop`, url: lastPayment.link }
+  if (mesh) return mesh.postMessage({ type: 'share', ...data }) // native share sheet in the iOS app
   if (navigator.share) {
     try { await navigator.share(data) } catch (e) { if (e.name !== 'AbortError') toast('Partage impossible') }
   } else {
@@ -131,16 +135,19 @@ $('tShare').onclick = async () => {
   }
 }
 
-// Bluetooth mesh: only the native iOS app can use Bluetooth; it injects `webkit.messageHandlers.arcmesh`.
-const mesh = globalThis.webkit?.messageHandlers?.arcmesh
+// Bluetooth mesh: only the native iOS app can use Bluetooth (see `mesh` above).
 $('tMesh').onclick = () => {
   if (!lastPayment) return
   if (!mesh) return toast("Le Bluetooth arrive avec l'app iOS. Ici : QR ou AirDrop.")
   mesh.postMessage({ type: 'broadcast', packet: lastPayment.packet })
   toast('Diffusé en Bluetooth aux appareils proches')
 }
-// Called by the iOS app when a packet arrives over the mesh.
+// Called by the iOS app when a packet arrives over the mesh, and when neighbors come and go.
 globalThis.arcdropReceive = (text) => importPacket(text, 'Bluetooth')
+globalThis.arcdropMeshPeers = (n) => {
+  $('meshPeers').hidden = false
+  $('meshPeers').textContent = n ? `${n} proche${n > 1 ? 's' : ''}` : 'personne autour'
+}
 
 async function copy(text) {
   try { await navigator.clipboard.writeText(text) } catch {

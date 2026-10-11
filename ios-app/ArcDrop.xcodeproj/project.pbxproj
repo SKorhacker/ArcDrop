@@ -1,0 +1,324 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		38D80048C5370C33C86E5C80 /* ArcDropRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06F15195601E9CBCB1EC7B4F /* ArcDropRelay.swift */; };
+		3C815C449429BECCB7C95C61 /* ArcMesh.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916475EE0B0931652BC17840 /* ArcMesh.swift */; };
+		4FD70BA6EE70E9EFA10E064A /* ArcDropApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C543D643261115626ED68E6 /* ArcDropApp.swift */; };
+		83B4A001E3AE8CDD64ADE755 /* WebAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF21DEE25F01A8B783ECA008 /* WebAppView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		06F15195601E9CBCB1EC7B4F /* ArcDropRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcDropRelay.swift; sourceTree = "<group>"; };
+		916475EE0B0931652BC17840 /* ArcMesh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcMesh.swift; sourceTree = "<group>"; };
+		9C543D643261115626ED68E6 /* ArcDropApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcDropApp.swift; sourceTree = "<group>"; };
+		A26CE91DDB19B3806207A244 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AF21DEE25F01A8B783ECA008 /* WebAppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebAppView.swift; sourceTree = "<group>"; };
+		C5A7AB5C0C50B159B1C206BF /* ArcDrop.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ArcDrop.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		19EF8E83613B36604F63CCFA = {
+			isa = PBXGroup;
+			children = (
+				914B61FAF97EADB91F2BECBE /* ios */,
+				428DDBCE0E4FA71543AE4227 /* mesh */,
+				89AA2DCFBA42E4B5B482DBFF /* Sources */,
+				5EE306B73C08B7D55D1DD60D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		428DDBCE0E4FA71543AE4227 /* mesh */ = {
+			isa = PBXGroup;
+			children = (
+				916475EE0B0931652BC17840 /* ArcMesh.swift */,
+			);
+			name = mesh;
+			path = ../mesh;
+			sourceTree = "<group>";
+		};
+		5EE306B73C08B7D55D1DD60D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C5A7AB5C0C50B159B1C206BF /* ArcDrop.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		89AA2DCFBA42E4B5B482DBFF /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				9C543D643261115626ED68E6 /* ArcDropApp.swift */,
+				A26CE91DDB19B3806207A244 /* Info.plist */,
+				AF21DEE25F01A8B783ECA008 /* WebAppView.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		914B61FAF97EADB91F2BECBE /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				06F15195601E9CBCB1EC7B4F /* ArcDropRelay.swift */,
+			);
+			name = ios;
+			path = ../ios;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1F26556E515296842AC26363 /* ArcDrop */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EB8E2E0AAC19F3F1346B2C04 /* Build configuration list for PBXNativeTarget "ArcDrop" */;
+			buildPhases = (
+				064399A796626C1B43A372E7 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ArcDrop;
+			packageProductDependencies = (
+			);
+			productName = ArcDrop;
+			productReference = C5A7AB5C0C50B159B1C206BF /* ArcDrop.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2C722A44073429E41C3C8F2A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					1F26556E515296842AC26363 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 1569B6E06E8211EAA9CE2132 /* Build configuration list for PBXProject "ArcDrop" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 19EF8E83613B36604F63CCFA;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5EE306B73C08B7D55D1DD60D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1F26556E515296842AC26363 /* ArcDrop */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		064399A796626C1B43A372E7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4FD70BA6EE70E9EFA10E064A /* ArcDropApp.swift in Sources */,
+				38D80048C5370C33C86E5C80 /* ArcDropRelay.swift in Sources */,
+				3C815C449429BECCB7C95C61 /* ArcMesh.swift in Sources */,
+				83B4A001E3AE8CDD64ADE755 /* WebAppView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		427F5F131C9F9008AA6D4388 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		7549B0061E1EA556F277AC2D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.arcdrop.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		B762FCA3DEC69B485D69B01D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		E46FF6C30BF14FB1E6BB43B6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.arcdrop.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1569B6E06E8211EAA9CE2132 /* Build configuration list for PBXProject "ArcDrop" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				427F5F131C9F9008AA6D4388 /* Debug */,
+				B762FCA3DEC69B485D69B01D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		EB8E2E0AAC19F3F1346B2C04 /* Build configuration list for PBXNativeTarget "ArcDrop" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7549B0061E1EA556F277AC2D /* Debug */,
+				E46FF6C30BF14FB1E6BB43B6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 2C722A44073429E41C3C8F2A /* Project object */;
+}

@@ -84,7 +84,7 @@ enum ArcDropPacket {
 actor ArcDropRelay {
     static let shared = ArcDropRelay()
     /// Set to the deployed ArcDrop gateway before building.
-    static let defaultGateway = "https://arcdrop.example"
+    static let defaultGateway = "https://arcdrop-pink.vercel.app"
 
     enum State: Equatable { case queued, settled(tx: String?), rejected(String) }
 

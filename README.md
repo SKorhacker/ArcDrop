@@ -36,6 +36,21 @@ Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend:
 - a tampered payment (recipient swapped) is rejected by the contract;
 - encode/decode round-trip, expiry, extraction from links and chat messages.
 
+## ArcDrop's own Bluetooth mesh
+
+`mesh/ArcMesh.swift` is a CoreBluetooth mesh: every device is both peripheral and central, so phones talk directly. Payments are **store-and-forward**: each node keeps the payments it has seen, hands them to every new device it meets, and floods new ones (7-hop limit, deduplicated by hash). A payment can cross a crowd in pockets until any node with internet settles it. Packets are self-authenticating, so nodes need no trust.
+
+- `ios-app/`: iOS app (XcodeGen project). It hosts the web app and adds the mesh, the native share sheet (AirDrop) and background settlement. Bridge: `webkit.messageHandlers.arcmesh` (JS → native), `arcdropReceive` / `arcdropMeshPeers` (native → JS).
+- `mesh/node/`: the same mesh as a macOS relay node (`arcmesh-node`), so a Mac can carry and settle payments too.
+- `mesh/check/`: framing tests (BLE MTUs from 20 to 512 bytes, interleaving, garbage).
+
+```bash
+# macOS relay node (no Xcode needed; see scripts/swift-check.sh for the toolchain workaround)
+mesh/build/arcmesh-node https://arcdrop-pink.vercel.app
+# iOS app
+cd ios-app && xcodegen generate && open ArcDrop.xcodeproj   # set your team, run on device
+```
+
 ## Run it
 
 ```bash
