@@ -135,9 +135,11 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     private var pendingCalls: [(String, [Any])] = []
 
     /// Mesh events can arrive before the page's script runs: hold them until it has loaded.
-    private func call(_ function: String, _ arguments: Any...) { call(function, arguments) }
+    // Two names on purpose: an overload taking [Any] would also capture `call("f", someArray)`
+    // and spread the array's elements as separate arguments.
+    private func call(_ function: String, _ arguments: Any...) { invoke(function, arguments) }
 
-    private func call(_ function: String, _ arguments: [Any]) {
+    private func invoke(_ function: String, _ arguments: [Any]) {
         guard loaded else { if pendingCalls.count < 200 { pendingCalls.append((function, arguments)) }; return }
         guard let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.fragmentsAllowed]),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -147,7 +149,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     // When the web app finishes loading: nearby devices, and any payment link that opened the app.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loaded = true
-        for (function, arguments) in pendingCalls { call(function, arguments) }
+        for (function, arguments) in pendingCalls { invoke(function, arguments) }
         pendingCalls = []
         call("arcdropMeshPeers", peers)
         for url in pendingURLs { call("arcdropOpenURL", url.absoluteString) }

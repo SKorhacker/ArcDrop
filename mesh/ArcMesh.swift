@@ -373,6 +373,7 @@ public final class ArcMesh: NSObject {
         for id in Set(outbound.keys).union(subscribers.keys) { catchUp(id) }
         for link in outbound.values where link.char != nil { link.peripheral.readRSSI() }
         hellos = hellos.filter { $0.value.seen.timeIntervalSinceNow > -Self.nearbyTimeout }
+        rssi = rssi.filter { hellos[$0.key] != nil || outbound[$0.key] != nil }
         publishNearby()
     }
 
@@ -414,8 +415,8 @@ public final class ArcMesh: NSObject {
 
     private func dropLink(_ id: UUID) {
         assembler.forget(id)
-        hellos[id] = nil
-        rssi[id] = nil
+        // BLE links come and go every few seconds: a neighbour stays listed until its hellos
+        // stop for `nearbyTimeout` (the tick forgets it), instead of flickering on every drop.
         updatePeers()
         publishNearby()
     }

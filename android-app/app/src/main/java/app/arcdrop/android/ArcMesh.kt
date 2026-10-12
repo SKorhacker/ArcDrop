@@ -226,6 +226,7 @@ class ArcMesh(private val context: Context, private val listener: Listener) {
             for (id in outbound.keys + subscribers.keys) catchUp(id)
             val now = System.currentTimeMillis()
             hellos.entries.removeAll { now - it.value.third > NEARBY_TIMEOUT_MS }
+            rssi.keys.retainAll(hellos.keys + outbound.keys)
             publishNearby()
             handler.postDelayed(this, HELLO_EVERY_MS)
         }
@@ -468,7 +469,7 @@ class ArcMesh(private val context: Context, private val listener: Listener) {
 
     private fun dropLink(id: String) {
         assembler.forget(id)
-        hellos.remove(id); rssi.remove(id)
+        // Links come and go: a neighbour stays listed until its hellos stop for NEARBY_TIMEOUT_MS.
         updatePeers(); publishNearby()
     }
 
