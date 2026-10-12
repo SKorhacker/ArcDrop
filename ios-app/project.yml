@@ -28,8 +28,8 @@ targets:
         CFBundleDisplayName: ArcDrop
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        NSBluetoothAlwaysUsageDescription: ArcDrop passe tes paiements aux téléphones proches en Bluetooth, sans réseau.
-        NSCameraUsageDescription: ArcDrop scanne les QR codes de paiement.
+        NSBluetoothAlwaysUsageDescription: ArcDrop passes your payments to nearby phones over Bluetooth, with no network.
+        NSCameraUsageDescription: ArcDrop scans payment QR codes.
         UIBackgroundModes: [bluetooth-central, bluetooth-peripheral]
         # arcdrop://pay#p=… links (AirDrop) open the app directly.
         CFBundleURLTypes:

@@ -213,11 +213,11 @@ class MainActivity : Activity(), ArcMesh.Listener {
             "share" -> {
                 val text = listOf(body.optString("text"), body.optString("url")).filter { it.isNotEmpty() }.joinToString("\n")
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
-                open(Intent.createChooser(send, "Envoyer le paiement"))
+                open(Intent.createChooser(send, "Send payment"))
             }
             "haptic" -> vibrate(body.optString("kind"))
             "readClipboard" -> {
-                // Only when the user tapped "Coller" (the page asks), only text, bounded.
+                // Only when the user tapped "Paste" (the page asks), only text, bounded.
                 val clip = (getSystemService(ClipboardManager::class.java))?.primaryClip
                 val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this)?.toString().orEmpty() else ""
                 call("arcdropClipboard", text.take(4096))

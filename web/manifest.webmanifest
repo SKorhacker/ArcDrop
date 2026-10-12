@@ -1,7 +1,7 @@
 {
   "name": "ArcDrop",
   "short_name": "ArcDrop",
-  "description": "Paie en USDC sans réseau. QR, AirDrop ou Bluetooth, réglé sur Arc.",
+  "description": "Pay in USDC with no network. QR, AirDrop or Bluetooth, settled on Arc.",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#0b0b0a",

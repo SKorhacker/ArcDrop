@@ -78,10 +78,12 @@ const gateway = () => (store.get('gateway', '') || webOrigin).replace(/\/$/, '')
 // Stored entries may be corrupted or from an older format: skip them instead of breaking the app.
 const tryDecode = (packet) => { try { return decodePayment(packet) } catch { return null } }
 const short = (a) => `${a.slice(0, 6)}…${a.slice(-4)}`
-// Cents, rounded down so we never overstate; French decimal comma.
-const fmt = (v) => formatUsdc(v - (v % 10_000n)).replace('.', ',')
+// Cents, rounded down so we never overstate.
+const fmt = (v) => formatUsdc(v - (v % 10_000n))
 const money = (v, t, c = chainId) => `${fmt(v)} ${symbol(t)}${c === 5042 ? '' : ' (test)'}`
-const time = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+// Payments saved by the French version of the app carry French transport names.
+const viaLabel = (v) => ({ lien: 'link', 'lien externe': 'external link', 'copier-coller': 'paste', 'QR code': 'QR code' })[v] ?? v ?? '—'
+const time = (ms) => new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 const MIN_VALUE = 10_000n // 0.01
 // A payment's identity, independent of how it was encoded or carried.
 const payId = (p) => `${p.chainId}:${p.token ?? 0}:${p.tab ? 't' : 'a'}:${p.from}:${p.nonce}`
@@ -193,7 +195,7 @@ function renderBalances() {
   const main = lastBalance(token), other = lastBalance(1 - token)
   $('balance').textContent = main == null ? '—' : money(main, token)
   $('balance2').hidden = !other
-  $('balance2').textContent = other ? `et ${money(other, 1 - token)}` : ''
+  $('balance2').textContent = other ? `and ${money(other, 1 - token)}` : ''
   // The key exists only on this device: once there's money on it, ask once for a backup.
   $('backupNag').hidden = !(BigInt(main ?? 0) > 0n || BigInt(other ?? 0) > 0n) || store.get(`${account.address}:backedUp`, false) === true
   renderTabs()
@@ -217,7 +219,7 @@ function renderAvail() {
   const a = availableOffline()
   const to = $('payTo').value.trim()
   const tab = isAddress(to) ? usableTab(getAddress(to)) : null
-  $('avail').textContent = a == null ? '' : `Disponible : ${money(a, token)}${tab ? ` · 🔒 ardoise : ${money(tab.left, token)} garantis` : ''}`
+  $('avail').textContent = a == null ? '' : `Available: ${money(a, token)}${tab ? ` · 🔒 tab: ${money(tab.left, token)} guaranteed` : ''}`
 }
 
 // ---------- tabs ("ardoises"): guaranteed offline payments to one person ----------
@@ -274,7 +276,7 @@ async function refreshTabs() {
   renderTabs()
 }
 
-const day = (sec) => new Date(sec * 1000).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
+const day = (sec) => new Date(sec * 1000).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
 
 function renderTabs() {
   const has = !!tabsAddress(chainId)
@@ -286,17 +288,17 @@ function renderTabs() {
     const left = BigInt(tab.locked) - BigInt(tab.cumulative)
     const expired = tab.expiry <= now
     rows.push(`<button class="cell tx" data-tab-close="${tab.to}" data-tab-token="${tab.token}" ${expired ? '' : 'disabled'}>
-      <span class="tx-ic out">🔒</span><span class="cell-main"><div>Pour ${esc(nameOf(tab.to))}</div>
-      <div class="cell-sub">${expired ? 'expirée · touche pour récupérer le reste' : `jusqu’au ${day(tab.expiry)}`}</div></span>
-      <span class="tx-end"><div class="tx-amt">${money(left > 0n ? left : 0n, tab.token)}</div><div class="tx-state">sur ${money(BigInt(tab.locked), tab.token)}</div></span></button>`)
+      <span class="tx-ic out">🔒</span><span class="cell-main"><div>For ${esc(nameOf(tab.to))}</div>
+      <div class="cell-sub">${expired ? 'expired · tap to reclaim the rest' : `until ${day(tab.expiry)}`}</div></span>
+      <span class="tx-end"><div class="tx-amt">${money(left > 0n ? left : 0n, tab.token)}</div><div class="tx-state">of ${money(BigInt(tab.locked), tab.token)}</div></span></button>`)
   }
   for (const tab of Object.values(tabsForMe())) {
     if (tab.chainId !== chainId || tab.expiry <= now || BigInt(tab.locked) <= BigInt(tab.paid)) continue
-    rows.push(`<div class="cell tx"><span class="tx-ic in">🔒</span><span class="cell-main"><div>De ${esc(nameOf(tab.from))}</div>
-      <div class="cell-sub">garantie pour toi jusqu’au ${day(tab.expiry)}</div></span>
-      <span class="tx-end"><div class="tx-amt in">${money(BigInt(tab.locked) - BigInt(tab.paid), tab.token)}</div><div class="tx-state">bloqués</div></span></div>`)
+    rows.push(`<div class="cell tx"><span class="tx-ic in">🔒</span><span class="cell-main"><div>From ${esc(nameOf(tab.from))}</div>
+      <div class="cell-sub">guaranteed for you until ${day(tab.expiry)}</div></span>
+      <span class="tx-end"><div class="tx-amt in">${money(BigInt(tab.locked) - BigInt(tab.paid), tab.token)}</div><div class="tx-state">locked</div></span></div>`)
   }
-  $('tabsList').innerHTML = rows.join('') || '<div class="empty">Aucune ardoise</div>'
+  $('tabsList').innerHTML = rows.join('') || '<div class="empty">No tabs</div>'
 }
 
 function askAmount(question) {
@@ -306,18 +308,18 @@ function askAmount(question) {
 }
 
 $('tabOpen').onclick = async () => {
-  if (!online) return toast('Il faut du réseau pour ouvrir une ardoise')
+  if (!online) return toast('You need a connection to open a tab')
   let to = $('payTo').value.trim()
-  if (!isAddress(to)) to = (prompt('Adresse 0x… de la personne (ou choisis-la d’abord dans Payer)') ?? '').trim()
-  if (!isAddress(to)) return toast('Adresse invalide')
+  if (!isAddress(to)) to = (prompt('Their 0x… address (or pick them in Pay first)') ?? '').trim()
+  if (!isAddress(to)) return toast('Invalid address')
   to = getAddress(to)
-  if (to === account.address) return toast("Pas d'ardoise avec toi-même")
-  const value = askAmount(`Combien de ${symbol(token)} bloquer pour ${nameOf(to)} pendant 7 jours ? (min 0,1)`)
-  if (value == null) return toast('Montant invalide (minimum 0,1)')
-  if (value > (availableOffline() ?? 0n)) return toast('Solde insuffisant (paiements en attente compris)')
+  if (to === account.address) return toast("You can't open a tab with yourself")
+  const value = askAmount(`How much ${symbol(token)} to lock for ${nameOf(to)} for 7 days? (min 0.1)`)
+  if (value == null) return toast('Invalid amount (minimum 0.1)')
+  if (value > (availableOffline() ?? 0n)) return toast('Insufficient balance (including pending payments)')
   const c = chainId, t = token
   let before
-  try { before = await tabState(c, t, account.address, to) } catch { return toast('Arc injoignable, réessaie') }
+  try { before = await tabState(c, t, account.address, to) } catch { return toast('Can’t reach Arc, try again') }
   try {
     const f = await createTabFunding({ account, to, amount: value, days: 7, chainId: c, token: t })
     const r = await fetch(`${gateway()}/api/fund`, { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -326,28 +328,28 @@ $('tabOpen').onclick = async () => {
     try { out = await r.json() } catch { /* ambiguous: check the chain below */ }
     // Whatever the gateway said, the chain decides: did our lock land?
     const st = await tabState(c, t, account.address, to)
-    if (!(st.locked > before.locked || (st.epoch === before.epoch && st.expiry > before.expiry))) throw new Error(out.error ?? 'refusé')
+    if (!(st.locked > before.locked || (st.epoch === before.epoch && st.expiry > before.expiry))) throw new Error(out.error ?? 'refused')
     const mine = myTabs()
     const prev = mine[tabKey(t, to, c)]
     mine[tabKey(t, to, c)] = { chainId: c, token: t, to, epoch: st.epoch, locked: st.locked.toString(), paid: st.paid.toString(), expiry: st.expiry,
       cumulative: (prev && prev.epoch === st.epoch && BigInt(prev.cumulative) > st.paid ? BigInt(prev.cumulative) : st.paid).toString() }
     acct.set('tabs', mine)
     if (heard.get(to) && !contacts[to]) { contacts[to] = heard.get(to); acct.set('contacts', contacts) }
-    toast(`🔒 Ardoise : ${money(value, t)} garantis pour ${nameOf(to)}`); haptic('success')
+    toast(`🔒 Tab: ${money(value, t)} guaranteed for ${nameOf(to)}`); haptic('success')
     refreshBalance()
-  } catch (e) { toast(`Ardoise impossible : ${e.message}`.slice(0, 90)) }
+  } catch (e) { toast(`Couldn’t open tab: ${e.message}`.slice(0, 90)) }
 }
 
 $('tabsList').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-tab-close]')
   if (!b || b.disabled) return
-  if (!online) return toast('Il faut du réseau')
+  if (!online) return toast('You need a connection')
   try {
     const wallet = createWalletClient({ account, chain: CHAINS[chainId], transport: http() })
     const hash = await wallet.writeContract({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'close', args: [tokenAddress(chainId, Number(b.dataset.tabToken)), b.dataset.tabClose] })
     await publicClient(chainId).waitForTransactionReceipt({ hash })
-    toast('Reste de l’ardoise récupéré'); refreshBalance()
-  } catch (err) { toast(`Impossible : ${err.shortMessage ?? err.message}`.slice(0, 90)) }
+    toast('Tab balance reclaimed'); refreshBalance()
+  } catch (err) { toast(`Failed: ${err.shortMessage ?? err.message}`.slice(0, 90)) }
 })
 
 function setToken(t) {
@@ -375,7 +377,7 @@ async function probe() {
   if (ok !== online) {
     online = ok
     $('netDot').classList.toggle('on', ok)
-    $('netLabel').textContent = ok ? 'en ligne' : 'hors ligne'
+    $('netLabel').textContent = ok ? 'online' : 'offline'
     if (ok) { refreshBalance(); settleAll() }
   }
 }
@@ -384,7 +386,7 @@ setInterval(probe, 5000)
 
 // ---------- nearby (Bluetooth presence) ----------
 let nearby = []
-const distance = (rssi) => rssi == null ? 'à côté' : rssi > -60 ? 'tout près' : rssi > -75 ? 'proche' : 'plus loin'
+const distance = (rssi) => rssi == null ? 'in range' : rssi > -60 ? 'very close' : rssi > -75 ? 'close' : 'farther'
 
 // A name already used by a contact with another address: someone may be impersonating them.
 const impostor = (p) => !!p.name && (Object.entries(contacts).some(([a, n]) => fold(n) === fold(p.name) && a !== p.address)
@@ -424,7 +426,7 @@ globalThis.arcdropNearby = (list) => {
 
 globalThis.arcdropMeshPeers = (n) => {
   $('meshPeers').hidden = false
-  $('meshPeers').textContent = n ? `${n} proche${n > 1 ? 's' : ''}` : 'personne autour'
+  $('meshPeers').textContent = n ? `${n} nearby` : 'no one nearby'
 }
 
 // ---------- pay ----------
@@ -439,9 +441,9 @@ function renderWho() {
   if (known) {
     const a = getAddress(to)
     const n = nearby.find((x) => x.address === a)
-    parts.push(`À <b>${esc(nearbyName(a))}</b> · …${a.slice(-4)}${contacts[a] ? ' · déjà payé' : n && impostor(n) ? ' · ⚠︎ nom déjà pris par un contact' : ''}${near ? ' · à proximité' : ''}`)
+    parts.push(`To <b>${esc(nearbyName(a))}</b> · …${a.slice(-4)}${contacts[a] ? ' · paid before' : n && impostor(n) ? ' · ⚠︎ name already used by a contact' : ''}${near ? ' · nearby' : ''}`)
   }
-  if (pendingRequest?.label) parts.push(`pour « ${esc(pendingRequest.label)} »`)
+  if (pendingRequest?.label) parts.push(`for “${esc(pendingRequest.label)}”`)
   $('payWho').hidden = !parts.length
   $('payWho').innerHTML = parts.join(' ')
 }
@@ -462,15 +464,15 @@ function fitAmount() {
   el.style.width = `${Math.ceil(measure.measureText(el.value || el.placeholder).width) + 2}px`
 }
 
-// Keypad: digits, one decimal comma, at most 2 decimals and 7 integer digits.
+// Keypad: digits, one decimal point, at most 2 decimals and 7 integer digits.
 $('keypad').addEventListener('click', (e) => {
   const k = e.target.closest('[data-k]')?.dataset.k
   if (!k) return
   let v = $('payAmount').value
   if (k === 'del') v = v.slice(0, -1)
-  else if (k === ',') { if (!v.includes(',')) v = (v || '0') + ',' }
+  else if (k === '.') { if (!v.includes('.')) v = (v || '0') + '.' }
   else {
-    const [int, dec] = v.split(',')
+    const [int, dec] = v.split('.')
     if (dec !== undefined ? dec.length >= 2 : int.length >= 7) return shake()
     v = v === '0' ? k : v + k
   }
@@ -479,15 +481,15 @@ $('keypad').addEventListener('click', (e) => {
 })
 
 function applyRequest(r) {
-  if (r.chainId !== chainId) return toast('Demande pour un autre réseau')
-  if (r.value % 10_000n !== 0n) return toast('Demande invalide (montant non arrondi au centime)')
+  if (r.chainId !== chainId) return toast('Request is for another network')
+  if (r.value % 10_000n !== 0n) return toast('Invalid request (amount not rounded to the cent)')
   pendingRequest = r
   setToken(r.token)
   $('payTo').value = r.to
-  $('payAmount').value = fmt(r.value).replace(/,00$/, '')
+  $('payAmount').value = fmt(r.value).replace(/\.00$/, '')
   fitAmount(); renderWho(); renderNearby()
   tab('pay')
-  toast(`Demande de ${nameOf(r.to)} : ${money(r.value, r.token)} · vérifie le destinataire avant de signer`)
+  toast(`Request from ${nameOf(r.to)}: ${money(r.value, r.token)} · check the recipient before signing`)
 }
 
 function openSheet(id) {
@@ -506,18 +508,18 @@ $('scrim').onclick = closeSheets
 
 $('signBtn').onclick = async () => {
   const to = $('payTo').value.trim()
-  if (!isAddress(to)) return toast('Choisis un destinataire')
+  if (!isAddress(to)) return toast('Choose a recipient')
   let value
-  try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Montant invalide') }
-  if (value < 10_000n) { shake(); return toast(`Minimum 0,01 ${symbol(token)}`) }
-  if (getAddress(to) === account.address) return toast("C'est ta propre adresse")
+  try { value = parseUsdc($('payAmount').value.replace(',', '.') || '0') } catch { return toast('Invalid amount') }
+  if (value < 10_000n) { shake(); return toast(`Minimum 0.01 ${symbol(token)}`) }
+  if (getAddress(to) === account.address) return toast("That's your own address")
   // Guaranteed payment on a tab with this person when it covers the amount, otherwise a plain one.
   const tab = usableTab(getAddress(to))
   const onTab = !!tab && tab.left >= value
   const available = availableOffline()
   if (!onTab) {
-    if (available == null) return toast("Ouvre l'app une fois en ligne pour connaître ton solde")
-    if (value > available) { shake(); return toast(`Disponible : ${money(available, token)}`) }
+    if (available == null) return toast('Open the app once while online to load your balance')
+    if (value > available) { shake(); return toast(`Available: ${money(available, token)}`) }
   }
 
   let p
@@ -526,7 +528,7 @@ $('signBtn').onclick = async () => {
     const mine = myTabs()
     const cumulative = BigInt(tab.cumulative) + value
     mine[tabKey(token, to)] = { ...mine[tabKey(token, to)], cumulative: cumulative.toString() }
-    if (!acct.set('tabs', mine)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
+    if (!acct.set('tabs', mine)) return toast('Storage full: payment canceled (nothing was sent)')
     p = await createTabPayment({ account, to, cumulative, epoch: tab.epoch, chainId, token })
   } else {
     p = await createPayment({ account, to, amount: value, chainId, token })
@@ -536,7 +538,7 @@ $('signBtn').onclick = async () => {
   lastPayment = { p, packet, amount: value, link: paymentLink(p, mesh && !globalThis.ArcMeshAndroid ? 'arcdrop://pay' : `${webOrigin}${BUNDLED ? '/' : location.pathname}`) }
   const sent = acct.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label, amount: value.toString() })
-  if (!acct.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
+  if (!acct.set('sent', sent)) return toast('Storage full: payment canceled (nothing was sent)')
   const heardAs = nearby.find((n) => n.address === p.to)
   if (heardAs && heard.get(p.to) && !contacts[p.to] && !impostor(heardAs)) { contacts[p.to] = heard.get(p.to); acct.set('contacts', contacts) }
 
@@ -545,11 +547,11 @@ $('signBtn').onclick = async () => {
   if (mesh && near) mesh.postMessage({ type: 'broadcast', packet })
 
   $('outAmount').textContent = money(value, p.token)
-  $('outPill').textContent = p.tab ? 'Signé · 🔒 garanti (ardoise)' : 'Signé · en attente'
-  $('outTo').textContent = `à ${nameOf(p.to)}`
+  $('outPill').textContent = p.tab ? 'Signed · 🔒 guaranteed (tab)' : 'Signed · pending'
+  $('outTo').textContent = `to ${nameOf(p.to)}`
   $('transportHint').textContent = near
-    ? `Envoyé en Bluetooth à ${nameOf(p.to)}. Tu peux aussi montrer le QR ou utiliser ${APPLE ? 'AirDrop' : 'le partage'}.`
-    : 'Aucun réseau nécessaire. Le premier appareil qui capte règle le paiement sur Arc.'
+    ? `Sent over Bluetooth to ${nameOf(p.to)}. You can also show the QR or use ${APPLE ? 'AirDrop' : 'Share'}.`
+    : 'No network needed. The first device to get a signal settles the payment on Arc.'
   await qrInto($('outQr'), lastPayment.link)
   openSheet('payOut')
   $('payAmount').value = ''; pendingRequest = null
@@ -558,26 +560,26 @@ $('signBtn').onclick = async () => {
   if (online) settleAll()
 }
 
-$('tQr').onclick = () => toast('Ton pote scanne ce QR depuis « Recevoir »')
+$('tQr').onclick = () => toast('Your friend scans this QR from “Receive”')
 
 // AirDrop: the iOS share sheet offers AirDrop and works without internet.
 $('tShare').onclick = async () => {
   if (!lastPayment) return
-  const data = { title: 'ArcDrop', text: `${money(lastPayment.amount, lastPayment.p.token)} pour toi via ArcDrop`, url: lastPayment.link }
+  const data = { title: 'ArcDrop', text: `${money(lastPayment.amount, lastPayment.p.token)} for you via ArcDrop`, url: lastPayment.link }
   if (mesh) return mesh.postMessage({ type: 'share', ...data }) // native share sheet in the iOS app
   if (navigator.share) {
-    try { await navigator.share(data) } catch (e) { if (e.name !== 'AbortError') toast('Partage impossible') }
+    try { await navigator.share(data) } catch (e) { if (e.name !== 'AbortError') toast('Couldn’t share') }
   } else {
-    await copy(lastPayment.link); toast('Lien copié (pas de feuille de partage ici)')
+    await copy(lastPayment.link); toast('Link copied (no share sheet here)')
   }
 }
 
 // Bluetooth mesh: only the native iOS app can use Bluetooth.
 $('tMesh').onclick = () => {
   if (!lastPayment) return
-  if (!mesh) return toast(`Le Bluetooth demande l'app ArcDrop. Ici : QR ou ${APPLE ? 'AirDrop' : 'partage'}.`)
+  if (!mesh) return toast(`Bluetooth needs the ArcDrop app. Here: QR or ${APPLE ? 'AirDrop' : 'Share'}.`)
   mesh.postMessage({ type: 'broadcast', packet: lastPayment.packet })
-  toast('Diffusé en Bluetooth aux appareils proches')
+  toast('Broadcast over Bluetooth to nearby devices')
 }
 
 // ---------- receive ----------
@@ -588,16 +590,16 @@ const relays = []
 async function importPacket(text, via, hops) {
   const raw = extractPacket(text)
   const quiet = via === 'Bluetooth' // mesh traffic: never toast errors for strangers' packets
-  if (!raw) return quiet || toast('Aucun paiement ArcDrop trouvé')
+  if (!raw) return quiet || toast('No ArcDrop payment found')
   let p
-  try { p = decodePayment(raw) } catch { return quiet || toast('Paiement illisible') }
+  try { p = decodePayment(raw) } catch { return quiet || toast('Unreadable payment') }
   const v = await verifyPayment(p)
-  if (!v.ok) return quiet || toast(v.reason === 'expired' ? 'Paiement expiré' : v.reason === 'not yet valid' ? 'Paiement pas encore valable : refusé' : 'Signature invalide : refusé')
+  if (!v.ok) return quiet || toast(v.reason === 'expired' ? 'Payment expired' : v.reason === 'not yet valid' ? 'Payment not valid yet: refused' : 'Invalid signature: refused')
   // Genuine signature: the mesh may now keep it and pass it on (whatever the network).
   if (via === 'Bluetooth' && mesh) mesh.postMessage({ type: 'vouch', packet: raw, hops: Number(hops) || 0 })
-  if (p.chainId !== chainId) return quiet || toast(`Refusé : paiement sur ${CHAINS[p.chainId]?.name ?? 'un autre réseau'}, pas ${CHAINS[chainId].name}`)
+  if (p.chainId !== chainId) return quiet || toast(`Refused: payment is on ${CHAINS[p.chainId]?.name ?? 'another network'}, not ${CHAINS[chainId].name}`)
   // The app signs for 7 days: a far-off expiry is a payment built to sit "pending" forever.
-  if (!p.tab && p.validBefore > BigInt(Math.floor(Date.now() / 1000) + PAYMENT_TTL + 86_400)) return quiet || toast('Refusé : échéance trop lointaine')
+  if (!p.tab && p.validBefore > BigInt(Math.floor(Date.now() / 1000) + PAYMENT_TTL + 86_400)) return quiet || toast('Refused: expiry too far in the future')
   const id = payId(p)
   const mine = p.to === account.address
   if (!mine) {
@@ -606,13 +608,13 @@ async function importPacket(text, via, hops) {
     if (online) settleAll()
     return
   }
-  if (p.value < MIN_VALUE) return quiet || toast('Refusé : montant inférieur à 0,01')
+  if (p.value < MIN_VALUE) return quiet || toast('Refused: amount below 0.01')
   const inbox = acct.get('inbox', [])
   if (inbox.some((i) => (i.id ?? payId(tryDecode(i.packet) ?? {})) === id)) return // same payment, any encoding
   // Flood guard: unsettled payments from people you never paid are capped.
   const strangers = contacts[p.from] ? [] : inbox.filter((i) => i.status === 'pending' && !contacts[tryDecode(i.packet)?.from])
-  if (strangers.filter((i) => tryDecode(i.packet)?.from === p.from).length >= 5) return quiet || toast('Trop de paiements en attente de ce payeur')
-  if (strangers.length >= 30) return quiet || toast('Trop de paiements en attente : règle-les d’abord (réseau)')
+  if (strangers.filter((i) => tryDecode(i.packet)?.from === p.from).length >= 5) return quiet || toast('Too many pending payments from this payer')
+  if (strangers.length >= 30) return quiet || toast('Too many pending payments: settle them first (needs a connection)')
   let amount = p.value, guaranteed = false, prev = 0n, redeemBefore
   const rx = acct.get('tabRx', {})
   const rk = p.tab ? `${tabKey(p.token, p.from)}:${p.epoch}` : null
@@ -622,24 +624,24 @@ async function importPacket(text, via, hops) {
     const known = tabsForMe()[tabKey(p.token, p.from)]
     const knownPaid = known && known.epoch === p.epoch ? BigInt(known.paid) : 0n
     prev = BigInt(rx[rk] ?? 0) > knownPaid ? BigInt(rx[rk] ?? 0) : knownPaid
-    if (p.cumulative <= prev) return quiet || toast('Bon déjà couvert par un paiement précédent')
+    if (p.cumulative <= prev) return quiet || toast('Voucher already covered by an earlier payment')
     amount = p.cumulative - prev
-    if (amount < MIN_VALUE) return quiet || toast('Refusé : montant inférieur à 0,01')
+    if (amount < MIN_VALUE) return quiet || toast('Refused: amount below 0.01')
     guaranteed = !!known && known.epoch === p.epoch && BigInt(known.locked) >= p.cumulative && known.expiry > Date.now() / 1000 + MARGIN
     redeemBefore = known?.expiry
   }
   // Already settled before it reached us (an old QR shown again, a second device): it's not new money.
   if (online && !p.tab) {
     const st = await checkPayment(p).catch(() => null)
-    if (st?.settled) return quiet || toast('Ce paiement était déjà réglé avant de t’arriver : rien de nouveau')
+    if (st?.settled) return quiet || toast('This payment was already settled before it reached you: nothing new')
   }
   // Save the payment first, the running total second: a full storage must never lose the payment.
   inbox.unshift({ id, packet: raw, via, hops, at: Date.now(), status: 'pending', amount: amount.toString(), prev: prev.toString(), guaranteed, redeemBefore })
-  if (!acct.set('inbox', inbox)) return toast('Stockage plein : paiement NON enregistré, garde le QR !')
+  if (!acct.set('inbox', inbox)) return toast('Storage full: payment NOT saved, keep the QR!')
   if (p.tab) { rx[rk] = p.cumulative.toString(); acct.set('tabRx', rx) }
   toast(p.tab
-    ? `${money(amount, p.token)} de ${nameOf(p.from)} · ${guaranteed ? '🔒 garanti, à encaisser avant le ' + day(redeemBefore) : 'ardoise non vérifiée, pas encore payé'}`
-    : `${money(amount, p.token)} de ${nameOf(p.from)} · PAS ENCORE PAYÉ (réglé dès que le réseau revient)`)
+    ? `${money(amount, p.token)} from ${nameOf(p.from)} · ${guaranteed ? '🔒 guaranteed, cash in before ' + day(redeemBefore) : 'unverified tab, not paid yet'}`
+    : `${money(amount, p.token)} from ${nameOf(p.from)} · NOT PAID YET (settles once you’re back online)`)
   haptic('success')
   // Tell the payer, over Bluetooth and without internet, that it arrived (real payments only).
   if (mesh && p.value >= MIN_VALUE) mesh.postMessage({ type: 'broadcast', packet: await createAck(account, p) })
@@ -660,7 +662,7 @@ globalThis.arcdropReceipt = async (text) => {
     const mine = myTabs(), k = tabKey(p.token, p.to)
     if (mine[k] && BigInt(mine[k].cumulative) < p.cumulative) { mine[k].cumulative = p.cumulative.toString(); acct.set('tabs', mine) }
   }
-  toast(`✓ ${nameOf(p.to)} a reçu ton paiement de ${money(amountOf(s, p), p.token)} (pas encore réglé)`)
+  toast(`✓ ${nameOf(p.to)} received your ${money(amountOf(s, p), p.token)} payment (not settled yet)`)
   haptic('success')
 }
 
@@ -668,9 +670,9 @@ globalThis.arcdropReceipt = async (text) => {
 globalThis.arcdropReceive = (text, hops) => importPacket(text, 'Bluetooth', hops)
 // AirDrop only exists on Apple devices: elsewhere the same button opens the system share sheet.
 const APPLE = !!globalThis.webkit?.messageHandlers?.arcmesh || /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)
-const SHARE_NAME = APPLE ? 'AirDrop' : 'Partager'
+const SHARE_NAME = APPLE ? 'AirDrop' : 'Share'
 $('tShareLabel').textContent = SHARE_NAME
-globalThis.arcdropOpenURL = (url) => handleText(url, 'lien externe') // arcdrop://… opened by iOS (AirDrop, or any app/site)
+globalThis.arcdropOpenURL = (url) => handleText(url, 'external link') // arcdrop://… opened by iOS (AirDrop, or any app/site)
 
 // Anything scanned, pasted or opened: a payment request or a payment.
 function handleText(text, via) {
@@ -679,7 +681,7 @@ function handleText(text, via) {
   return importPacket(text, via)
 }
 
-$('importBtn').onclick = () => { handleText($('pasteBox').value, 'copier-coller'); $('pasteBox').value = '' }
+$('importBtn').onclick = () => { handleText($('pasteBox').value, 'paste'); $('pasteBox').value = '' }
 // Android web views can't read the clipboard: the app reads it natively and answers via arcdropClipboard.
 function readClipboard() {
   if (!globalThis.ArcMeshAndroid) return navigator.clipboard.readText()
@@ -692,12 +694,12 @@ function readClipboard() {
 $('pastePay').onclick = async () => {
   try {
     const text = await readClipboard()
-    if (extractPacket(text) || decodeRequest(text)) return handleText(text, 'copier-coller')
+    if (extractPacket(text) || decodeRequest(text)) return handleText(text, 'paste')
   } catch { /* clipboard blocked: fall back to the manual field */ }
   $('manual').hidden = false
   $('pasteBox').focus()
 }
-for (const id of ['copyAddr', 'copyAddr2']) $(id).onclick = async () => { await copy(account.address); toast('Adresse copiée') }
+for (const id of ['copyAddr', 'copyAddr2']) $(id).onclick = async () => { await copy(account.address); toast('Address copied') }
 
 // AirDrop / any link opens the app with #p=… (payment) or #r=… (request).
 function handleHash() {
@@ -706,7 +708,7 @@ function handleHash() {
   history.replaceState(null, '', location.pathname + location.search)
   let text = h
   try { text = decodeURIComponent(h) } catch { /* malformed: use as is */ }
-  handleText(text, 'lien')
+  handleText(text, 'link')
 }
 addEventListener('hashchange', handleHash)
 
@@ -732,7 +734,7 @@ async function scan(onText) {
       requestAnimationFrame(tick)
     }
     tick()
-  } catch { toast('Caméra indisponible') }
+  } catch { toast('Camera unavailable') }
 }
 function stopScan() {
   if (scanning) scanning.stream.getTracks().forEach((t) => t.stop())
@@ -746,7 +748,7 @@ $('scanTo').onclick = () => {
     if (r) return applyRequest(r)
     const m = String(t).trim().match(/^(?:ethereum:)?(0x[0-9a-fA-F]{40})(?:@\d+)?$/)
     tab('pay')
-    if (m) { $('payTo').value = getAddress(m[1]); pendingRequest = null; renderWho(); renderNearby() } else toast('Pas une adresse')
+    if (m) { $('payTo').value = getAddress(m[1]); pendingRequest = null; renderWho(); renderNearby() } else toast('Not an address')
   })
 }
 
@@ -765,8 +767,8 @@ async function renderRequest() {
   const part = requestPart()
   $('reqUnitLabel').textContent = symbol(activeRequest.token)
   $('splitInfo').hidden = !part || part.split === 1
-  if (part && part.split > 1) $('splitInfo').textContent = `${money(part.total, activeRequest.token)} ÷ ${part.split} = ${money(part.value, activeRequest.token)} par personne`
-  if (!part || part.value < 10_000n) { $('reqQr').dataset.qr = ''; $('reqQr').replaceChildren(); $('reqStatus').textContent = 'Tape un montant.'; return }
+  if (part && part.split > 1) $('splitInfo').textContent = `${money(part.total, activeRequest.token)} ÷ ${part.split} = ${money(part.value, activeRequest.token)} per person`
+  if (!part || part.value < 10_000n) { $('reqQr').dataset.qr = ''; $('reqQr').replaceChildren(); $('reqStatus').textContent = 'Enter an amount.'; return }
   Object.assign(activeRequest, { value: part.value, label: $('reqLabel').value.trim() })
   const req = encodeRequest({ chainId, token: activeRequest.token, to: account.address, value: part.value, label: activeRequest.label })
   await qrInto($('reqQr'), `${webOrigin}/#r=${req}`)
@@ -783,8 +785,8 @@ function renderRequestStatus() {
       && !seen.has(payId(p)) && seen.add(payId(p)))
   const paid = got.filter(({ i }) => i.status === 'settled').length // partial / unverified never count
   $('reqStatus').innerHTML = got.length
-    ? `<b>✓ ${paid} réglé${paid > 1 ? 's' : ''} sur Arc</b>${got.length > paid ? ` · ${got.length - paid} en attente de réseau` : ''} · ${got.map(({ p }) => esc(nameOf(p.from))).join(', ')}`
-    : `Le payeur scanne ce QR : ${money(activeRequest.value, activeRequest.token)} pour toi, déjà rempli.`
+    ? `<b>✓ ${paid} settled on Arc</b>${got.length > paid ? ` · ${got.length - paid} waiting for a connection` : ''} · ${got.map(({ p }) => esc(nameOf(p.from))).join(', ')}`
+    : `The payer scans this QR: ${money(activeRequest.value, activeRequest.token)} to you, already filled in.`
 }
 
 $('askBtn').onclick = () => {
@@ -835,7 +837,7 @@ async function settleAll() {
       if (!item) continue
       const p = decodePayment(item.packet)
       if (item.status === 'settled' && txUrl(hashOf(item.tx))) {
-        confirmSettled({ title: 'Paiement reçu', amount: `+${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token)}`, sub: `de ${nameOf(p.from)} · par ${item.via ?? '—'}`, ms: item.ms, tx: txUrl(hashOf(item.tx)) })
+        confirmSettled({ title: 'Payment received', amount: `+${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token)}`, sub: `from ${nameOf(p.from)} · via ${viaLabel(item.via)}`, ms: item.ms, tx: txUrl(hashOf(item.tx)) })
       }
     }
     // Strangers' payments: forwarded through the gateway only, never with our own gas.
@@ -852,15 +854,15 @@ async function settleAll() {
 async function proven(p, hash, ms, item) {
   const c = await confirmSettlement(p, { txHash: hash }).catch(() => null)
   if (c?.paid) return { status: 'settled', tx: c.tx, ms, note: undefined }
-  if (!c) return { status: 'pending', note: 'vérification sur Arc impossible pour le moment' }
+  if (!c) return { status: 'pending', note: 'can’t verify on Arc right now' }
   if (p.tab) {
     const prev = BigInt(item?.prev ?? 0)
     const got = c.paidUpTo > prev ? c.paidUpTo - prev : 0n
-    if (got > 0n) return { status: 'partial', received: got.toString(), tx: c.tx, note: `payé ${money(got, p.token)} sur ${money(amountOf(item, p), p.token)} : ardoise dépassée ou vidée` }
-    return { status: 'pending', note: 'ardoise pas encore encaissée' }
+    if (got > 0n) return { status: 'partial', received: got.toString(), tx: c.tx, note: `paid ${money(got, p.token)} of ${money(amountOf(item, p), p.token)}: tab exceeded or emptied` }
+    return { status: 'pending', note: 'tab not cashed in yet' }
   }
-  if (c.unknown) return { status: 'unverified', note: 'déjà utilisé sur Arc, mais preuve introuvable (règlement ancien ?) : ne compte pas comme payé' }
-  return { status: 'failed', note: 'NON payé : le numéro de ce paiement a servi à une autre transaction' }
+  if (c.unknown) return { status: 'unverified', note: 'already used on Arc, but no proof found (old settlement?): not counted as paid' }
+  return { status: 'failed', note: 'NOT paid: this payment’s nonce was used by another transaction' }
 }
 
 async function settleOne(packet, mine, item) {
@@ -868,11 +870,11 @@ async function settleOne(packet, mine, item) {
   const now = Math.floor(Date.now() / 1000)
   const status = await checkPayment(p).catch(() => null)
   if (status?.settled || (p.tab && status?.paidUpTo > BigInt(item?.prev ?? 0) && !status.funded)) return proven(p, undefined, undefined, item)
-  if (!status && (p.tab || p.validBefore <= BigInt(now))) return { status: 'pending', note: 'vérification sur Arc impossible pour le moment' }
-  if (p.tab && status.tab.epoch !== p.epoch) return { status: 'failed', note: 'ardoise fermée avant encaissement : non payé' }
-  if (p.tab && status.tab.expiry <= now) return { status: 'failed', note: 'ardoise expirée avant encaissement : non payé' }
-  if (!p.tab && p.validBefore <= BigInt(now)) return { status: 'failed', note: 'expiré avant d’avoir été réglé' }
-  if (status && !status.funded) return { status: 'pending', note: `payeur pas assez approvisionné (${money(status.payerBalance, p.token)})` }
+  if (!status && (p.tab || p.validBefore <= BigInt(now))) return { status: 'pending', note: 'can’t verify on Arc right now' }
+  if (p.tab && status.tab.epoch !== p.epoch) return { status: 'failed', note: 'tab closed before cash-in: not paid' }
+  if (p.tab && status.tab.expiry <= now) return { status: 'failed', note: 'tab expired before cash-in: not paid' }
+  if (!p.tab && p.validBefore <= BigInt(now)) return { status: 'failed', note: 'expired before it was settled' }
+  if (status && !status.funded) return { status: 'pending', note: `payer’s balance too low (${money(status.payerBalance, p.token)})` }
 
   // 1) the gateway pays the gas. Its errors are never final: only chain evidence or expiry are.
   let gatewayNote
@@ -883,8 +885,8 @@ async function settleOne(packet, mine, item) {
     const out = await r.json()
     if (out.ok && out.hash) return proven(p, out.hash, Number(out.settleMs) || undefined, item)
     if (out.ok && out.alreadySettled) return proven(p, undefined, undefined, item)
-    gatewayNote = String(out.error ?? `passerelle : ${r.status}`).slice(0, 100)
-  } catch { gatewayNote = 'passerelle injoignable' }
+    gatewayNote = String(out.error ?? `gateway: ${r.status}`).slice(0, 100)
+  } catch { gatewayNote = 'gateway unreachable' }
 
   // 2) this device pays the gas, only for payments addressed to us (never for strangers' floods)
   if (!mine || p.value < MIN_VALUE) return { status: 'pending', note: gatewayNote }
@@ -908,7 +910,7 @@ async function refreshSent() {
       if (st.settled) {
         const r = await proven(p, undefined, undefined, s)
         updateEntry('sent', s.packet, { status: r.status, settledAt: Date.now() })
-        if (r.status === 'settled') confirmSettled({ title: 'Paiement réglé', amount: money(amountOf(s, p), p.token), sub: `à ${nameOf(p.to)} · final sur Arc`, tx: r.tx })
+        if (r.status === 'settled') confirmSettled({ title: 'Payment settled', amount: money(amountOf(s, p), p.token), sub: `to ${nameOf(p.to)} · final on Arc`, tx: r.tx })
         continue
       }
       // Not settled, and the chain says so: only now can expiry or a closed tab mean "failed".
@@ -932,7 +934,7 @@ function showConfirm() {
   $('cAmount').textContent = c.amount
   $('cSub').textContent = c.sub
   $('cSpeed').hidden = !c.ms
-  $('cSpeed').textContent = c.ms ? `⚡ Réglé sur Arc en ${(c.ms / 1000).toFixed(2).replace('.', ',')} s` : ''
+  $('cSpeed').textContent = c.ms ? `⚡ Settled on Arc in ${(c.ms / 1000).toFixed(2)} s` : ''
   const link = txUrl(hashOf(c.tx))
   $('cLink').hidden = !link
   if (link) $('cLink').href = link
@@ -949,8 +951,8 @@ $('cDone').onclick = () => {
 const ICON_IN = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>'
 const ICON_OUT = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>'
 const ICON_RELAY = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12h16M14 6l6 6-6 6"/></svg>'
-const EMPTY = '<div class="empty">Aucun paiement pour l\'instant</div>'
-const STATE = { pending: 'en attente', delivered: 'reçu ✓', settled: 'réglé', failed: 'échec', partial: 'partiel', unverified: 'à vérifier' }
+const EMPTY = '<div class="empty">No payments yet</div>'
+const STATE = { pending: 'pending', delivered: 'received ✓', settled: 'settled', failed: 'failed', partial: 'partial', unverified: 'to verify' }
 
 document.addEventListener('click', (e) => {
   const row = e.target.closest('[data-expand]')
@@ -961,18 +963,18 @@ document.addEventListener('click', (e) => {
 function journey(item, p) {
   const s = item.status
   const carried = item.via === 'Bluetooth'
-    ? `Reçu en Bluetooth${item.hops ? ` · ${item.hops} saut${item.hops > 1 ? 's' : ''} de téléphone en téléphone` : ''}`
-    : `Reçu par ${item.via ?? '—'}`
-  let settled = 'Réglé sur Arc'
+    ? `Received over Bluetooth${item.hops ? ` · ${item.hops} hop${item.hops > 1 ? 's' : ''} phone to phone` : ''}`
+    : `Received via ${viaLabel(item.via)}`
+  let settled = 'Settled on Arc'
   if (s === 'settled' && item.settledAt) {
     const mins = Math.round((item.settledAt - item.at) / 60_000)
-    settled += ` à ${time(item.settledAt)}${mins >= 1 ? ` · ${mins} min après réception` : ''}`
+    settled += ` at ${time(item.settledAt)}${mins >= 1 ? ` · ${mins} min after receipt` : ''}`
   }
-  if (item.ms) settled += ` · en ${(item.ms / 1000).toFixed(2).replace('.', ',')} s`
+  if (item.ms) settled += ` · in ${(item.ms / 1000).toFixed(2)} s`
   return `<ol>
-    <li class="done">Signé hors ligne par ${esc(nameOf(p.from))}${p.tab ? (item.guaranteed ? ' · 🔒 garanti par son ardoise' : ' · ardoise non vérifiée') : ''}</li>
-    <li class="done">${carried} à ${time(item.at)} · signature vérifiée</li>
-    <li class="${s === 'settled' ? 'done' : s === 'failed' ? 'fail' : ''}">${settled}${txUrl(hashOf(item.tx)) ? ` · <a href="${txUrl(hashOf(item.tx))}" target="_blank" rel="noopener">voir la tx</a>` : ''}</li>
+    <li class="done">Signed offline by ${esc(nameOf(p.from))}${p.tab ? (item.guaranteed ? ' · 🔒 guaranteed by their tab' : ' · unverified tab') : ''}</li>
+    <li class="done">${carried} at ${time(item.at)} · signature verified</li>
+    <li class="${s === 'settled' ? 'done' : s === 'failed' ? 'fail' : ''}">${settled}${txUrl(hashOf(item.tx)) ? ` · <a href="${txUrl(hashOf(item.tx))}" target="_blank" rel="noopener">view tx</a>` : ''}</li>
   </ol>${item.note ? `<div class="note">${esc(item.note)}</div>` : ''}`
 }
 
@@ -992,9 +994,9 @@ function renderInbox() {
     // A payment for someone else is only carried by this device: never show it as income.
     return txCell({
       icon: mine ? ICON_IN : ICON_RELAY, kind: mine ? 'in' : 'relay',
-      title: mine ? `De ${nameOf(p.from)}` : 'Relayé',
-      sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`)
-        + (p.tab && item.guaranteed && item.status === 'pending' && (item.redeemBefore ?? 0) > Date.now() / 1000 ? ` · 🔒 garanti jusqu’au ${day(item.redeemBefore)}` : ''),
+      title: mine ? `From ${nameOf(p.from)}` : 'Relayed',
+      sub: (mine ? `via ${viaLabel(item.via)}` : `${nameOf(p.from)} → ${nameOf(p.to)}`)
+        + (p.tab && item.guaranteed && item.status === 'pending' && (item.redeemBefore ?? 0) > Date.now() / 1000 ? ` · 🔒 guaranteed until ${day(item.redeemBefore)}` : ''),
       amount: `${mine ? '+' : ''}${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token, p.chainId)}`, amountClass: mine && item.status === 'settled' ? 'in' : '',
       status: item.status, details: journey(item, p),
     })
@@ -1006,9 +1008,9 @@ function renderSent() {
   $('sent').innerHTML = sent.length ? sent.map((s) => {
     const p = tryDecode(s.packet)
     if (!p) return ''
-    const when = new Date(s.at).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    const when = new Date(s.at).toLocaleString('en-US', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
     return txCell({
-      icon: ICON_OUT, kind: 'out', title: `À ${nameOf(p.to)}`,
+      icon: ICON_OUT, kind: 'out', title: `To ${nameOf(p.to)}`,
       sub: s.label ? `${s.label} · ${when}` : when,
       amount: `−${money(amountOf(s, p), p.token, p.chainId)}`,
       status: s.status === 'pending' && s.delivered ? 'delivered' : s.status,
@@ -1031,24 +1033,24 @@ addEventListener('scroll', () => $('navbar').classList.toggle('scrolled', scroll
 
 $('chainSel').onchange = (e) => { chainId = Number(e.target.value); store.set('chain', chainId); online = false; renderWallet(); probe() }
 $('gateway').onchange = (e) => store.set('gateway', e.target.value.trim())
-$('myName').onchange = (e) => { store.set('name', e.target.value.trim()); announce(); toast('Nom visible par les appareils proches') }
+$('myName').onchange = (e) => { store.set('name', e.target.value.trim()); announce(); toast('Name visible to nearby devices') }
 $('exportKey').onclick = $('backupKey').onclick = async () => {
-  if (!(await copy(key))) return toast('Copie impossible ici : réessaie, ou exporte depuis un autre navigateur')
+  if (!(await copy(key))) return toast('Couldn’t copy here: try again, or export from another browser')
   store.set(`${account.address}:backedUp`, true)
   $('backupNag').hidden = true
-  toast('Clé privée copiée : colle-la dans ton gestionnaire de mots de passe, puis copie autre chose. Ne la partage jamais.')
+  toast('Private key copied: paste it into your password manager, then copy something else. Never share it.')
 }
 $('importKey').onclick = () => {
-  if (!confirm('Importer une clé remplace ce wallet sur cet appareil. As-tu exporté la clé actuelle ?')) return
-  const k = prompt('Clé privée (0x…)')
+  if (!confirm('Importing a key replaces this wallet on this device. Have you exported the current key?')) return
+  const k = prompt('Private key (0x…)')
   if (!k) return
   try {
     account = privateKeyToAccount(k.trim()); key = k.trim()
     store.set('key', key)
     if (mesh) mesh.postMessage({ type: 'saveKey', key, replace: true })
     contacts = acct.get('contacts', {})
-    renderWallet(); renderInbox(); renderSent(); renderTabs(); announce(); refreshBalance(); toast('Clé importée')
-  } catch { toast('Clé invalide') }
+    renderWallet(); renderInbox(); renderSent(); renderTabs(); announce(); refreshBalance(); toast('Key imported')
+  } catch { toast('Invalid key') }
 }
 
 if ('serviceWorker' in navigator && !BUNDLED) navigator.serviceWorker.register('sw.js').catch(() => {})
