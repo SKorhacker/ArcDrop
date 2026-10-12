@@ -30,7 +30,9 @@ public struct NearbyPeer: Equatable {
 }
 
 public protocol ArcMeshDelegate: AnyObject {
-    /// A payment (`arcdrop:1:…` / `arcdrop:2:…`) seen for the first time.
+    /// A payment (`arcdrop:1:…` / `arcdrop:2:…` / `arcdrop:4:…`) seen for the first time.
+    /// With `verifyFirst`, it is neither stored nor forwarded until the app checks its
+    /// signature and calls `vouch(_:hops:)`.
     func mesh(_ mesh: ArcMesh, didReceive packet: String, hops: Int)
     /// A receipt (`arcdrop-ack:1:…`) seen for the first time.
     func mesh(_ mesh: ArcMesh, didReceiveReceipt receipt: String)
@@ -67,6 +69,14 @@ public final class ArcMesh: NSObject {
     static let maxNearby = 30
     static let catchUpCooldown: TimeInterval = 30
     static let knownChains: Set<UInt32> = [5042, 5042002]
+    static let maxAwaiting = 2000
+    static let maxOwn = 200
+    static let storedLifetime: TimeInterval = 30 * 86_400 // the longest tab
+
+    /// The app sets this: payments are stored and forwarded only once their signature
+    /// checks out, so nobody can push junk "from" someone else to crowd out their payments.
+    /// The macOS relay node (no signature code) leaves it off and relies on the structural checks.
+    public var verifyFirst = false
 
     public weak var delegate: ArcMeshDelegate?
     public private(set) var peerCount = 0
@@ -89,6 +99,9 @@ public final class ArcMesh: NSObject {
     private var linkBudget: [UUID: (messages: Double, frames: Double, at: Date)] = [:]
     private var lastCatchUp: [UUID: Date] = [:]
     private var myAddress: Data?
+    // Payments handed to the app for signature checking (bounded), and the ones this device sent.
+    private var awaiting: [Data: Date] = [:]
+    private var own: Set<Data> = []
 
     // Presence: who is behind each link, and how strong their signal is.
     private var profile: Data?
@@ -113,8 +126,22 @@ public final class ArcMesh: NSObject {
     public func broadcast(_ text: String) {
         guard let envelope = Self.envelope(from: text) else { log("not an ArcDrop message"); return }
         queue.async {
+            let key = Data(SHA256.hash(data: envelope))
+            if self.own.count < Self.maxOwn { self.own.insert(key) }
             guard self.remember(envelope, hops: 0) == .new else { return }
             self.send(envelope, hops: 0, to: nil)
+        }
+    }
+
+    /// The app checked this payment's signature: store it and pass it on.
+    public func vouch(_ text: String, hops: Int) {
+        guard let envelope = Self.envelope(from: text), envelope.first == Kind.payment.rawValue else { return }
+        let h = UInt8(clamping: max(0, hops))
+        queue.async {
+            let key = Data(SHA256.hash(data: envelope))
+            guard self.awaiting.removeValue(forKey: key) != nil else { return } // only what the mesh handed over
+            guard Self.plausible(envelope), self.remember(envelope, hops: h) == .new, h < Self.maxHops else { return }
+            self.send(envelope, hops: h, to: nil)
         }
     }
 
@@ -175,9 +202,10 @@ public final class ArcMesh: NSObject {
         return (Data(b[o..<o + 20]), Data(b[o + 20..<o + 40]))
     }
 
+    /// Only payments this device broadcast itself: anything else can be forged by a neighbour
+    /// (addresses are public), so it can't claim a protected slot.
     private func isMine(_ envelope: Data) -> Bool {
-        guard let me = myAddress, let p = Self.parties(envelope) else { return false }
-        return p.from == me || p.to == me
+        own.contains(Data(SHA256.hash(data: envelope)))
     }
 
     /// Stores an envelope. Receipts and payments have separate quotas; our own payments are
@@ -191,6 +219,7 @@ public final class ArcMesh: NSObject {
             return .fewerHops
         }
         let isReceipt = envelope.first == Kind.receipt.rawValue
+        store = store.filter { $0.value.seen.timeIntervalSinceNow > -Self.storedLifetime } // tab vouchers have no expiry inside
         if let p = Self.parties(envelope), !isMine(envelope) {
             let sameFrom = store.filter { Self.parties($0.value.envelope)?.from == p.from }
             if sameFrom.count >= Self.maxPerPayer, let oldest = sameFrom.min(by: { $0.value.seen < $1.value.seen })?.key { store[oldest] = nil }
@@ -203,6 +232,8 @@ public final class ArcMesh: NSObject {
                let oldest = store.filter({ sameKind($0.value.envelope) && !isMine($0.value.envelope) }).min(by: { $0.value.seen < $1.value.seen })?.key {
                 store[oldest] = nil // never our own payments
             }
+            // Hard cap: still full (only our own left)? Keep what we have.
+            if store.values.filter({ sameKind($0.envelope) }).count >= quota && !isMine(envelope) { return .known }
         }
         store[key] = (envelope, hops, Date())
         return .new
@@ -246,8 +277,25 @@ public final class ArcMesh: NSObject {
 
     private func received(_ envelope: Data, hops: UInt8, from link: UUID) {
         guard let first = envelope.first, let kind = Kind(rawValue: first) else { return }
+        guard spend(link, messages: 1) else { return }
         if kind == .hello { return heard(envelope, from: link) }
-        guard spend(link, messages: 1), Self.plausible(envelope), let text = Self.text(from: envelope) else { return }
+        guard Self.plausible(envelope), let text = Self.text(from: envelope) else { return }
+        if verifyFirst && kind == .payment {
+            let key = Data(SHA256.hash(data: envelope))
+            if let old = store[key] { // already verified: only a shorter path matters
+                if hops < old.hops, remember(envelope, hops: hops) == .fewerHops, hops < Self.maxHops { send(envelope, hops: hops, to: nil) }
+                return
+            }
+            guard awaiting[key] == nil else { return }
+            if awaiting.count >= Self.maxAwaiting {
+                awaiting = awaiting.filter { $0.value.timeIntervalSinceNow > -60 }
+                if awaiting.count >= Self.maxAwaiting { return }
+            }
+            awaiting[key] = Date()
+            log("payment received (\(hops) hop\(hops == 1 ? "" : "s")), checking signature")
+            DispatchQueue.main.async { self.delegate?.mesh(self, didReceive: text, hops: Int(hops)) }
+            return
+        }
         switch remember(envelope, hops: hops) {
         case .known: return
         case .fewerHops: // a shorter path showed up: keep spreading it (defeats hop poisoning)
@@ -293,7 +341,9 @@ public final class ArcMesh: NSObject {
         let targets = subscribers.filter { peer == nil || peer == $0.key }.map(\.value)
         guard !targets.isEmpty, let characteristic else { return }
         let max = targets.map { $0.maximumUpdateValueLength }.min() ?? 20
-        for frame in Self.frames(for: envelope, hops: hops + 1, maxLength: max) {
+        let frames = Self.frames(for: envelope, hops: hops + 1, maxLength: max)
+        guard pendingNotify.count + frames.count <= Self.maxPendingNotify else { return } // whole messages only
+        for frame in frames {
             if !peripheral.updateValue(frame, for: characteristic, onSubscribedCentrals: targets) {
                 guard pendingNotify.count < Self.maxPendingNotify else { break } // a stalled reader can't grow memory
                 pendingNotify.append((frame, targets))
@@ -308,7 +358,8 @@ public final class ArcMesh: NSObject {
         lastCatchUp[peer] = Date()
         while lastCatchUp.count > Self.maxLinks, let stale = lastCatchUp.min(by: { $0.value < $1.value })?.key { lastCatchUp[stale] = nil }
         // Our own payments first, then other payments, receipts last.
-        let items = store.values.filter { $0.hops < Self.maxHops && Self.plausible($0.envelope) }.sorted { a, b in
+        // Shuffled within each rank: whatever doesn't fit this time gets its turn on the next resync.
+        let items = store.values.filter { $0.hops < Self.maxHops && Self.plausible($0.envelope) }.shuffled().sorted { a, b in
             let rank = { (e: Data) in self.isMine(e) ? 0 : (e.first == Kind.payment.rawValue ? 1 : 2) }
             return rank(a.envelope) < rank(b.envelope)
         }
@@ -362,6 +413,7 @@ public final class ArcMesh: NSObject {
     }
 
     private func dropLink(_ id: UUID) {
+        assembler.forget(id)
         hellos[id] = nil
         rssi[id] = nil
         updatePeers()
@@ -501,6 +553,9 @@ struct FrameAssembler {
     struct Key: Hashable { let link: UUID; let id: UInt32 }
     static let maxPartial = 64
     static let maxPartialPerLink = 4
+    static let partialLifetime: TimeInterval = 10
+
+    mutating func forget(_ link: UUID) { partial = partial.filter { $0.key.link != link } }
     private var partial: [Key: (count: Int, hops: UInt8, pieces: [Int: Data], from: Date)] = [:]
 
     static let anyLink = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
@@ -515,6 +570,9 @@ struct FrameAssembler {
         if count == 1 { return (body, hops) }
 
         let key = Key(link: link, id: id)
+        // A message whose last frames never came (full buffer, disconnect) expires fast,
+        // so it can't use up the link's slots for good.
+        if partial[key] == nil { partial = partial.filter { $0.key.link != link || $0.value.from.timeIntervalSinceNow > -Self.partialLifetime } }
         if partial[key] == nil, partial.keys.filter({ $0.link == link }).count >= Self.maxPartialPerLink { return nil }
         if partial[key] == nil, partial.count >= Self.maxPartial {
             partial = partial.filter { $0.value.from.timeIntervalSinceNow > -30 }

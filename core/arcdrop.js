@@ -261,7 +261,9 @@ export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
   // A postdated payment would verify yet be unspendable until then.
   if (BigInt(p.validAfter ?? 0n) > BigInt(now)) return { ok: false, reason: 'not yet valid' }
   if (p.tab && p.from === p.to) return { ok: false, reason: 'bad signature' }
-  const signer = p.tab
+  let signer
+  try {
+    signer = p.tab
     ? await recoverTypedDataAddress({
       domain: tabsDomain(p.chainId), types: TAB_TYPES, primaryType: 'TabVoucher',
       message: { token: tokenAddress(p.chainId, p.token), from: p.from, to: p.to, epoch: BigInt(p.epoch), cumulative: BigInt(p.cumulative) },
@@ -272,6 +274,7 @@ export async function verifyPayment(p, now = Math.floor(Date.now() / 1000)) {
       message: { from: p.from, to: p.to, value: p.value, validAfter: p.validAfter, validBefore: p.validBefore, nonce: p.nonce },
       signature: p.signature,
     })
+  } catch { return { ok: false, reason: 'bad signature' } } // any malformed signature is a refusal, never a crash
   if (signer !== getAddress(p.from)) return { ok: false, reason: 'bad signature' }
   if (BigInt(now) >= p.validBefore) return { ok: false, reason: 'expired' }
   return { ok: true }
@@ -376,6 +379,19 @@ export const _receiptPaysForTests = receiptPays
 
 // { paid: true, tx } | { paid: false, reason }. `txHash` (from our own settlement) is checked
 // first; otherwise the recent history is searched (`maxBlocks`, ~0.5 s per block on Arc).
+// Best effort (the explorer is only a hint: every candidate is verified against the chain).
+async function explorerCandidates(p) {
+  const base = CHAINS[p.chainId].blockExplorers.default.url
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 8_000)
+  try {
+    const r = await fetch(`${base}/api/v2/addresses/${p.to}/token-transfers?type=ERC-20`, { signal: ctrl.signal })
+    const items = (await r.json())?.items ?? []
+    return items
+      .filter((t) => t?.from?.hash?.toLowerCase() === p.from.toLowerCase() && BigInt(t?.total?.value ?? -1) === p.value && /^0x[0-9a-fA-F]{64}$/.test(t?.transaction_hash ?? ''))
+      .map((t) => t.transaction_hash).slice(0, 10)
+  } finally { clearTimeout(timer) }
+}
+
 export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl } = {}) {
   const client = publicClient(p.chainId, rpcUrl)
   const explorer = (hash) => `${CHAINS[p.chainId].blockExplorers.default.url}/tx/${hash}`
@@ -403,7 +419,13 @@ export async function confirmSettlement(p, { txHash, maxBlocks = 40_000n, rpcUrl
       return { paid: false, reason: 'nonce used by another transaction' }
     }
   }
-  // Nothing in the searched window: maybe settled earlier by someone else. Unknown, NOT fraud.
+  // Older than the log window (settled long ago by someone else): ask the explorer for the
+  // recipient's transfers from this payer, then check each candidate on-chain ourselves.
+  for (const hash of await explorerCandidates(p).catch(() => [])) {
+    const r = await client.getTransactionReceipt({ hash }).catch(() => null)
+    if (r && receiptPays(r, p)) return { paid: true, tx: explorer(hash) }
+  }
+  // Nothing found: maybe settled earlier by someone else. Unknown, NOT fraud.
   return { paid: false, unknown: true, reason: 'not found in recent history' }
 }
 
@@ -444,7 +466,9 @@ export async function tabsTo(chainId, token, to, { limit = 50 } = {}) {
   const [, total] = await client.readContract({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'payersOf', args: [tokenAddress(chainId, token), to, 0n, 0n] })
   const start = total > BigInt(limit) ? total - BigInt(limit) : 0n
   const [page] = await client.readContract({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'payersOf', args: [tokenAddress(chainId, token), to, start, BigInt(limit)] })
-  const states = await Promise.all(page.map((from) => tabState(chainId, token, from, to)))
+  // A few reads at a time: hundreds in parallel would trip the public RPC's rate limit.
+  const states = []
+  for (let i = 0; i < page.length; i += 10) states.push(...await Promise.all(page.slice(i, i + 10).map((from) => tabState(chainId, token, from, to))))
   return page.map((from, i) => ({ from: getAddress(from), ...states[i] })).reverse()
 }
 
@@ -540,11 +564,14 @@ export function decodeRequest(text) {
 
 // One payment, one encoding: the contracts reject high-s signatures and v outside {27, 28},
 // so such packets would look valid offline yet never settle. Reject them up front.
-const HALF_N = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n
+const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n // secp256k1 order
+const HALF_N = N / 2n
 function canonicalSignature(sig) {
   const s = BigInt(bytesToHex(sig.slice(32, 64)))
   if (sig[64] !== 27 && sig[64] !== 28) throw new Error('non-canonical signature')
   if (s === 0n || s > HALF_N) throw new Error('non-canonical signature')
+  const r = BigInt(bytesToHex(sig.slice(0, 32)))
+  if (r === 0n || r >= N) throw new Error('non-canonical signature') // would make recovery throw later
   return bytesToHex(sig)
 }
 

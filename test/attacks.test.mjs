@@ -129,4 +129,15 @@ const packet = encodePayment(p)
 
 // 11. Payment links survive extraction exactly (no truncation games).
 assert.equal(extractPacket(`https://x/#p=${packet}&junk`), packet)
+// 12. A signature with r = 0 or r >= n is refused (it used to make verification throw).
+for (const r of [0n, N, N + 1n]) {
+  const bytes = bytesOf(packet)
+  const sigAt = bytes.length - 65
+  Buffer.from(r.toString(16).padStart(64, '0').slice(-64), 'hex').copy(bytes, sigAt)
+  const forged = `arcdrop:1:${b64(bytes)}`
+  let refused = false
+  try { refused = !(await verifyPayment(decodePayment(forged))).ok } catch (e) { refused = /non-canonical/.test(e.message) }
+  assert.ok(refused, `r = ${r} must be refused, not crash`)
+}
+
 console.log('all attack tests passed')

@@ -68,3 +68,9 @@ assert.equal(await balanceOf(friend.address), 1_000_000n)
 const t1 = await tabState(chainId, 0, payer.address, friend.address)
 assert.equal(t1.paid, t1.locked)
 console.log(`✓ overspend capped: friend received exactly the locked ${formatUsdc(t1.locked)} USDC`)
+
+// Only the real USDC/EURC: a fake token can't create "funded" tabs or touch payer lists.
+const fake = privateKeyToAccount(generatePrivateKey()).address
+await reverts({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'redeem', args: [fake, payer.address, friend.address, 1n, 27, `0x${'11'.repeat(32)}`, `0x${'22'.repeat(32)}`] })
+await reverts({ address: tabsAddress(chainId), abi: TABS_ABI, functionName: 'close', args: [fake, friend.address] })
+console.log('✓ unknown tokens refused')

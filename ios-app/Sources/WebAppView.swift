@@ -26,6 +26,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     private let mesh = ArcMesh()
     private var loaded = false
     private var pendingURLs: [URL] = []
+    private var keychainBroken = false
     private var peers = 0 // last count reported on the main thread (ArcMesh's own counter lives on its queue)
 
     override func viewDidLoad() {
@@ -33,11 +34,10 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true // QR scanner video
         config.userContentController.add(self, name: "arcmesh")
-        if let key = Keychain.load(), let json = try? JSONSerialization.data(withJSONObject: [key]),
-           let literal = String(data: json, encoding: .utf8) {
-            config.userContentController.addUserScript(WKUserScript(
-                source: "globalThis.ARCDROP_NATIVE_KEY = \(literal)[0]",
-                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        switch Keychain.read() {
+        case .found(let key): inject(key, into: config.userContentController)
+        case .missing: break
+        case .failed: keychainBroken = true // the web app keeps its own copy (saveKey answers false)
         }
 
         webView = WKWebView(frame: view.bounds, configuration: config)
@@ -53,6 +53,7 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         }
 
         mesh.delegate = self
+        mesh.verifyFirst = true // the web app checks each payment's signature, then vouches for it
         NotificationCenter.default.addObserver(forName: .arcdropOpenURL, object: nil, queue: .main) { [weak self] note in
             guard let self, let url = note.object as? URL else { return }
             if self.loaded { self.call("arcdropOpenURL", url.absoluteString) } else if self.pendingURLs.count < 10 { self.pendingURLs.append(url) }
@@ -74,6 +75,9 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
             guard let packet = body["packet"] as? String else { return }
             mesh.broadcast(packet)
             ArcDropRelay.shared.observe(packet) // settle right away if this phone is online (ignores receipts)
+        case "vouch":
+            guard let packet = body["packet"] as? String else { return }
+            mesh.vouch(packet, hops: body["hops"] as? Int ?? 0)
         case "profile":
             if let address = body["address"] as? String { mesh.setProfile(address: address, name: body["name"] as? String ?? "") }
         case "presence":
@@ -89,7 +93,9 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
             // Never overwrite an existing wallet unless the user explicitly imported a key.
             guard let key = body["key"] as? String else { return }
             let replace = body["replace"] as? Bool ?? false
-            let ok = Keychain.load() == nil || replace ? Keychain.save(key) : Keychain.load() == key
+            guard !keychainBroken, case let state = Keychain.read(), state != .failed else { call("arcdropKeySaved", false); return }
+            let ok = state == .missing || replace ? Keychain.save(key) : state == .found(key)
+            if ok { inject(key, into: webView.configuration.userContentController) } // a reload finds the key too
             call("arcdropKeySaved", ok)
         case "haptic":
             switch body["kind"] as? String {
@@ -100,6 +106,13 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
         default:
             break
         }
+    }
+
+    /// The key is injected before the page's scripts, on every load.
+    private func inject(_ key: String, into controller: WKUserContentController) {
+        guard let json = try? JSONSerialization.data(withJSONObject: [key]), let literal = String(data: json, encoding: .utf8) else { return }
+        controller.removeAllUserScripts()
+        controller.addUserScript(WKUserScript(source: "globalThis.ARCDROP_NATIVE_KEY = \(literal)[0]", injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
     // MARK: Mesh → JS
@@ -119,7 +132,13 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
 
     func mesh(_ mesh: ArcMesh, log: String) { print("[mesh] \(log)") }
 
-    private func call(_ function: String, _ arguments: Any...) {
+    private var pendingCalls: [(String, [Any])] = []
+
+    /// Mesh events can arrive before the page's script runs: hold them until it has loaded.
+    private func call(_ function: String, _ arguments: Any...) { call(function, arguments) }
+
+    private func call(_ function: String, _ arguments: [Any]) {
+        guard loaded else { if pendingCalls.count < 200 { pendingCalls.append((function, arguments)) }; return }
         guard let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.fragmentsAllowed]),
               let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("globalThis.\(function) && globalThis.\(function)(...\(json))")
@@ -128,6 +147,8 @@ final class WebAppController: UIViewController, WKScriptMessageHandler, WKUIDele
     // When the web app finishes loading: nearby devices, and any payment link that opened the app.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         loaded = true
+        for (function, arguments) in pendingCalls { call(function, arguments) }
+        pendingCalls = []
         call("arcdropMeshPeers", peers)
         for url in pendingURLs { call("arcdropOpenURL", url.absoluteString) }
         pendingURLs = []
@@ -181,26 +202,34 @@ enum Keychain {
         kSecAttrAccount as String: "key",
     ]
 
-    static func load() -> String? {
+    enum State: Equatable { case found(String), missing, failed }
+
+    /// "No key yet" and "couldn't read the Keychain" are different: only the first may create a wallet.
+    static func read() -> State {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        switch SecItemCopyMatching(q as CFDictionary, &item) {
+        case errSecSuccess:
+            guard let data = item as? Data, let key = String(data: data, encoding: .utf8) else { return .failed }
+            return .found(key)
+        case errSecItemNotFound: return .missing
+        default: return .failed
+        }
     }
 
     /// Adds or updates in place (never delete-then-add: a failed add would lose the wallet).
     @discardableResult
     static func save(_ key: String) -> Bool {
-        if load() == key { return true }
+        if read() == .found(key) { return true }
         let data = Data(key.utf8)
         let update = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if update == errSecSuccess { return load() == key }
+        if update == errSecSuccess { return read() == .found(key) }
         guard update == errSecItemNotFound else { return false }
         var q = query
         q[kSecValueData as String] = data
         q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess && load() == key
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess && read() == .found(key)
     }
 }

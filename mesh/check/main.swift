@@ -92,3 +92,19 @@ var v2usdc = envelopeV1(chain: 5042002, value: 100_000, validAfter: 0, validBefo
 v2usdc.insert(0, at: 1) // token byte 0 in a v2 packet
 precondition(!ArcMesh.plausible(v2usdc), "v2 with token 0")
 print("✓ long-lived, dust and fake-EURC packets are dropped too")
+
+// A link that left 4 messages half-sent must recover once it reconnects (it used to stay blocked).
+do {
+    var asm = FrameAssembler()
+    let link = UUID()
+    let big = Data(repeating: 7, count: 300)
+    for _ in 0..<4 { _ = asm.add(ArcMesh.frames(for: big, hops: 1, maxLength: 23)[0], from: link) } // first frame only
+    let fresh = ArcMesh.frames(for: big, hops: 1, maxLength: 23)
+    var got: (Data, UInt8)?
+    for f in fresh { got = asm.add(f, from: link) ?? got }
+    precondition(got == nil, "per-link cap still applies while the link is up")
+    asm.forget(link) // disconnect
+    for f in fresh { got = asm.add(f, from: link) ?? got }
+    precondition(got?.0 == big, "a reconnected link delivers again")
+    print("✓ half-sent messages can't block a link for good")
+}

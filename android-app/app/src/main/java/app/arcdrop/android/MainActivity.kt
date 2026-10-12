@@ -3,16 +3,18 @@ package app.arcdrop.android
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.ClipboardManager
+import android.content.SharedPreferences
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -21,6 +23,7 @@ import android.webkit.WebViewClient
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.webkit.JavaScriptReplyProxy
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
@@ -54,14 +57,30 @@ class MainActivity : Activity(), ArcMesh.Listener {
     private val pendingUrls = ArrayList<String>()
     private var pendingCamera: PermissionRequest? = null
     private var peers = 0
+    private val pendingCalls = ArrayList<Pair<String, Array<out Any?>>>()
+    private var keyScript: ScriptHandler? = null
+    private var canInject = false
 
-    private val keyStore by lazy {
-        EncryptedSharedPreferences.create(
-            this, "arcdrop_wallet",
-            MasterKey.Builder(this).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+    // The Android keystore can break (OS update, lock screen change): never crash on it. When it is
+    // unusable, the web app keeps its own copy of the key (saveKey answers false).
+    private val keyStore: SharedPreferences? by lazy {
+        try {
+            EncryptedSharedPreferences.create(
+                this, "arcdrop_wallet",
+                MasterKey.Builder(this).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        } catch (e: Exception) { null }
+    }
+
+    private fun savedKey(): String? = try { keyStore?.getString("key", null) } catch (e: Exception) { null }
+
+    /** The key is injected before the page's scripts on every load (re-registered whenever it changes). */
+    private fun injectKey(key: String) {
+        if (!canInject) return
+        keyScript?.remove()
+        keyScript = WebViewCompat.addDocumentStartJavaScript(webView, "globalThis.ARCDROP_NATIVE_KEY = ${JSONObject.quote(key)};", setOf(ORIGIN))
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -89,12 +108,20 @@ class MainActivity : Activity(), ArcMesh.Listener {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url
                 if (url.toString().startsWith("$ORIGIN/")) return false
-                if (url.scheme == "https" && request.hasGesture()) startActivity(Intent(Intent.ACTION_VIEW, url))
+                if (url.scheme == "https" && request.hasGesture()) open(Intent(Intent.ACTION_VIEW, url))
+                return true
+            }
+
+            // The page's renderer was killed (memory): rebuild the screen instead of crashing the app.
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                runOnUiThread { recreate() }
                 return true
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 loaded = true
+                pendingCalls.forEach { (f, args) -> call(f, *args) }
+                pendingCalls.clear()
                 call("arcdropMeshPeers", peers)
                 pendingUrls.forEach { call("arcdropOpenURL", it) }
                 pendingUrls.clear()
@@ -111,6 +138,7 @@ class MainActivity : Activity(), ArcMesh.Listener {
                     if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
                     } else {
+                        pendingCamera?.deny()
                         pendingCamera = request
                         requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_REQUEST)
                     }
@@ -119,10 +147,8 @@ class MainActivity : Activity(), ArcMesh.Listener {
         }
 
         // The wallet key, decrypted from the Android keystore, injected before the page's scripts run.
-        val saved = keyStore.getString("key", null)
-        if (saved != null && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            WebViewCompat.addDocumentStartJavaScript(webView, "globalThis.ARCDROP_NATIVE_KEY = ${JSONObject.quote(saved)};", setOf(ORIGIN))
-        }
+        canInject = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        savedKey()?.let { injectKey(it) }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             WebViewCompat.addWebMessageListener(webView, "ArcMeshAndroid", setOf(ORIGIN)) { _, message, sourceOrigin, isMainFrame, _: JavaScriptReplyProxy ->
                 if (isMainFrame && sourceOrigin.toString().trimEnd('/') == ORIGIN) onBridge(message)
@@ -130,7 +156,9 @@ class MainActivity : Activity(), ArcMesh.Listener {
         }
 
         setContentView(webView)
-        handleIntent(intent)
+        // A recreated screen, or a launch from Recents, must not replay an old payment link.
+        val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) handleIntent(intent)
         webView.loadUrl(PAGE)
         requestMeshPermissions()
     }
@@ -179,12 +207,13 @@ class MainActivity : Activity(), ArcMesh.Listener {
         val body = try { JSONObject(message.data ?: return) } catch (e: Exception) { return }
         when (body.optString("type")) {
             "broadcast" -> body.optString("packet").takeIf { it.isNotEmpty() }?.let { mesh.broadcast(it) }
+            "vouch" -> body.optString("packet").takeIf { it.isNotEmpty() }?.let { mesh.vouch(it, body.optInt("hops", 0)) }
             "profile" -> body.optString("address").takeIf { it.isNotEmpty() }?.let { mesh.setProfile(it, body.optString("name")) }
             "presence" -> if (!body.optBoolean("on", true)) mesh.stopPresence()
             "share" -> {
                 val text = listOf(body.optString("text"), body.optString("url")).filter { it.isNotEmpty() }.joinToString("\n")
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
-                startActivity(Intent.createChooser(send, "Envoyer le paiement"))
+                open(Intent.createChooser(send, "Envoyer le paiement"))
             }
             "haptic" -> vibrate(body.optString("kind"))
             "readClipboard" -> {
@@ -195,9 +224,16 @@ class MainActivity : Activity(), ArcMesh.Listener {
             }
             "saveKey" -> {
                 // Never overwrite an existing wallet unless the user explicitly imported a key.
+                // Answer false whenever the key couldn't be stored AND re-injected on the next load:
+                // the web app then keeps its own copy, so the wallet is never lost.
                 val key = body.optString("key").takeIf { Regex("^0x[0-9a-fA-F]{64}$").matches(it) } ?: return
-                val existing = keyStore.getString("key", null)
-                val ok = if (existing == null || body.optBoolean("replace", false)) keyStore.edit().putString("key", key).commit() else existing == key
+                val store = keyStore
+                if (store == null || !canInject) { call("arcdropKeySaved", false); return }
+                val ok = try {
+                    val existing = store.getString("key", null)
+                    if (existing == null || body.optBoolean("replace", false)) store.edit().putString("key", key).commit() else existing == key
+                } catch (e: Exception) { false }
+                if (ok) injectKey(key)
                 call("arcdropKeySaved", ok)
             }
         }
@@ -224,8 +260,14 @@ class MainActivity : Activity(), ArcMesh.Listener {
         call("arcdropNearby", list)
     }
 
-    /** Calls a global JS function with JSON-encoded arguments (no string concatenation of raw data). */
+    private fun open(intent: Intent) {
+        try { startActivity(intent) } catch (e: ActivityNotFoundException) {}
+    }
+
+    /** Calls a global JS function with JSON-encoded arguments (no string concatenation of raw data).
+     *  Before the page has loaded, calls are held (a payment arriving during startup isn't lost). */
     private fun call(function: String, vararg args: Any?) {
+        if (!loaded) { if (pendingCalls.size < 200) pendingCalls.add(function to args); return }
         val json = JSONArray().apply { args.forEach { put(it ?: JSONObject.NULL) } }.toString()
         runOnUiThread { webView.evaluateJavascript("globalThis.$function && globalThis.$function(...$json)", null) }
     }

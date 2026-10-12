@@ -4,7 +4,7 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
 import { isAddress, getAddress, createWalletClient, http } from 'viem'
 import {
   createPayment, encodePayment, decodePayment, verifyPayment, paymentLink, extractPacket,
-  checkPayment, settlePayment, simulatePayment, publicClient, formatUsdc, parseUsdc, CHAINS, USDC_ABI,
+  checkPayment, settlePayment, simulatePayment, publicClient, formatUsdc, parseUsdc, CHAINS, USDC_ABI, PAYMENT_TTL,
   tokenAddress, symbol, createAck, ackNonce, verifyAck, encodeRequest, decodeRequest,
   tabsAddress, tabState, tabsTo, createTabFunding, createTabPayment, TABS_ABI, confirmSettlement,
 } from '../core/arcdrop.js'
@@ -38,8 +38,12 @@ const mesh = globalThis.webkit?.messageHandlers?.arcmesh
 // so it survives even if the web view's storage is cleared.
 // The Keychain copy wins. A web-storage copy is kept until the native side confirms it has
 // saved the key, and the native side never overwrites an existing key unless asked to import.
-let key = globalThis.ARCDROP_NATIVE_KEY || store.get('key')
+const webKey = store.get('key')
+let key = globalThis.ARCDROP_NATIVE_KEY || webKey
 if (!key) key = generatePrivateKey()
+// The native store answered with another key (e.g. its read failed once and a wallet was made
+// meanwhile): keep that one aside rather than overwrite it.
+if (globalThis.ARCDROP_NATIVE_KEY && webKey && webKey !== key) store.set('key.previous', webKey)
 store.set('key', key)
 if (mesh && !globalThis.ARCDROP_NATIVE_KEY) mesh.postMessage({ type: 'saveKey', key, replace: false })
 globalThis.arcdropKeySaved = (ok) => { if (ok) try { localStorage.removeItem('arcdrop.key') } catch {} }
@@ -89,8 +93,13 @@ const hashOf = (url) => (String(url ?? '').match(/0x[0-9a-fA-F]{64}$/) ?? [])[0]
 // Bluetooth names are attacker-controlled: no control, zero-width or bidi characters.
 const cleanName = (n) => [...String(n ?? '').normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034F\u115F\u1160\u3164\uFFA0]/gu, '').trim()].slice(0, 24).join('')
 // For impostor checks: case, accents and look-alike letters folded.
-const CONFUSABLE = { а: 'a', е: 'e', о: 'o', р: 'p', с: 'c', х: 'x', у: 'y', і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ӏ: 'l', '0': 'o', '1': 'l' }
-const fold = (n) => cleanName(n).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/./gu, (c) => CONFUSABLE[c] ?? c)
+const CONFUSABLE = {
+  а: 'a', в: 'b', е: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', х: 'x', у: 'y', і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ӏ: 'l', ү: 'y', һ: 'h', ԛ: 'q', ԝ: 'w',
+  α: 'a', β: 'b', ε: 'e', η: 'n', ι: 'i', κ: 'k', ν: 'v', ο: 'o', ρ: 'p', τ: 't', υ: 'u', χ: 'x', ϲ: 'c', ϳ: 'j',
+  Ꭺ: 'a', Ᏼ: 'b', Ꮯ: 'c', Ꭰ: 'd', Ꭼ: 'e', Ꮐ: 'g', Ꮋ: 'h', Ꭻ: 'j', Ꮶ: 'k', Ꮮ: 'l', Ꮇ: 'm', Ꮲ: 'p', Ꮪ: 's', Ꭲ: 't', Ꮩ: 'v', Ꮃ: 'w', Ꮓ: 'z',
+  '0': 'o', '1': 'l', '|': 'l', 'ı': 'i', 'ɡ': 'g', 'ɑ': 'a',
+}
+const fold = (n) => cleanName(n).replace(/./gu, (c) => CONFUSABLE[c] ?? c).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/./gu, (c) => CONFUSABLE[c] ?? c)
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 
 // Contacts = people you actually paid (name as seen when you paid them). Names merely
@@ -124,8 +133,12 @@ async function qrInto(el, text) {
 }
 
 async function copy(text) {
-  try { await navigator.clipboard.writeText(text) } catch {
-    const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove()
+  try { await navigator.clipboard.writeText(text); return true } catch {
+    const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select()
+    let ok = false
+    try { ok = document.execCommand('copy') } catch {}
+    t.remove()
+    return ok
   }
 }
 
@@ -467,10 +480,10 @@ $('keypad').addEventListener('click', (e) => {
 
 function applyRequest(r) {
   if (r.chainId !== chainId) return toast('Demande pour un autre réseau')
+  if (r.value % 10_000n !== 0n) return toast('Demande invalide (montant non arrondi au centime)')
   pendingRequest = r
   setToken(r.token)
   $('payTo').value = r.to
-  if (r.value % 10_000n !== 0n) return toast('Demande invalide (montant non arrondi au centime)')
   $('payAmount').value = fmt(r.value).replace(/,00$/, '')
   fitAmount(); renderWho(); renderNearby()
   tab('pay')
@@ -524,7 +537,8 @@ $('signBtn').onclick = async () => {
   const sent = acct.get('sent', [])
   sent.unshift({ packet, at: Date.now(), status: 'pending', label: pendingRequest?.label, amount: value.toString() })
   if (!acct.set('sent', sent)) return toast('Stockage plein : paiement annulé (rien n’a été envoyé)')
-  if (nearby.some((n) => n.address === p.to) && heard.get(p.to) && !contacts[p.to]) { contacts[p.to] = heard.get(p.to); acct.set('contacts', contacts) }
+  const heardAs = nearby.find((n) => n.address === p.to)
+  if (heardAs && heard.get(p.to) && !contacts[p.to] && !impostor(heardAs)) { contacts[p.to] = heard.get(p.to); acct.set('contacts', contacts) }
 
   // Someone right next to us over Bluetooth: send it straight away.
   const near = nearby.some((n) => n.address === p.to)
@@ -577,9 +591,13 @@ async function importPacket(text, via, hops) {
   if (!raw) return quiet || toast('Aucun paiement ArcDrop trouvé')
   let p
   try { p = decodePayment(raw) } catch { return quiet || toast('Paiement illisible') }
-  if (p.chainId !== chainId) return quiet || toast(`Refusé : paiement sur ${CHAINS[p.chainId]?.name ?? 'un autre réseau'}, pas ${CHAINS[chainId].name}`)
   const v = await verifyPayment(p)
   if (!v.ok) return quiet || toast(v.reason === 'expired' ? 'Paiement expiré' : v.reason === 'not yet valid' ? 'Paiement pas encore valable : refusé' : 'Signature invalide : refusé')
+  // Genuine signature: the mesh may now keep it and pass it on (whatever the network).
+  if (via === 'Bluetooth' && mesh) mesh.postMessage({ type: 'vouch', packet: raw, hops: Number(hops) || 0 })
+  if (p.chainId !== chainId) return quiet || toast(`Refusé : paiement sur ${CHAINS[p.chainId]?.name ?? 'un autre réseau'}, pas ${CHAINS[chainId].name}`)
+  // The app signs for 7 days: a far-off expiry is a payment built to sit "pending" forever.
+  if (!p.tab && p.validBefore > BigInt(Math.floor(Date.now() / 1000) + PAYMENT_TTL + 86_400)) return quiet || toast('Refusé : échéance trop lointaine')
   const id = payId(p)
   const mine = p.to === account.address
   if (!mine) {
@@ -592,7 +610,9 @@ async function importPacket(text, via, hops) {
   const inbox = acct.get('inbox', [])
   if (inbox.some((i) => (i.id ?? payId(tryDecode(i.packet) ?? {})) === id)) return // same payment, any encoding
   // Flood guard: unsettled payments from people you never paid are capped.
-  if (!contacts[p.from] && inbox.filter((i) => i.status === 'pending' && tryDecode(i.packet)?.from === p.from).length >= 5) return quiet || toast('Trop de paiements en attente de ce payeur')
+  const strangers = contacts[p.from] ? [] : inbox.filter((i) => i.status === 'pending' && !contacts[tryDecode(i.packet)?.from])
+  if (strangers.filter((i) => tryDecode(i.packet)?.from === p.from).length >= 5) return quiet || toast('Trop de paiements en attente de ce payeur')
+  if (strangers.length >= 30) return quiet || toast('Trop de paiements en attente : règle-les d’abord (réseau)')
   let amount = p.value, guaranteed = false, prev = 0n, redeemBefore
   const rx = acct.get('tabRx', {})
   const rk = p.tab ? `${tabKey(p.token, p.from)}:${p.epoch}` : null
@@ -604,8 +624,14 @@ async function importPacket(text, via, hops) {
     prev = BigInt(rx[rk] ?? 0) > knownPaid ? BigInt(rx[rk] ?? 0) : knownPaid
     if (p.cumulative <= prev) return quiet || toast('Bon déjà couvert par un paiement précédent')
     amount = p.cumulative - prev
+    if (amount < MIN_VALUE) return quiet || toast('Refusé : montant inférieur à 0,01')
     guaranteed = !!known && known.epoch === p.epoch && BigInt(known.locked) >= p.cumulative && known.expiry > Date.now() / 1000 + MARGIN
     redeemBefore = known?.expiry
+  }
+  // Already settled before it reached us (an old QR shown again, a second device): it's not new money.
+  if (online && !p.tab) {
+    const st = await checkPayment(p).catch(() => null)
+    if (st?.settled) return quiet || toast('Ce paiement était déjà réglé avant de t’arriver : rien de nouveau')
   }
   // Save the payment first, the running total second: a full storage must never lose the payment.
   inbox.unshift({ id, packet: raw, via, hops, at: Date.now(), status: 'pending', amount: amount.toString(), prev: prev.toString(), guaranteed, redeemBefore })
@@ -794,7 +820,14 @@ async function settleAll() {
   if (settling) { settleAgain = true; return } // something arrived mid-run: one more pass after
   settling = true
   try {
-    for (const pending of acct.get('inbox', []).filter((i) => i.status === 'pending' && tryDecode(i.packet))) {
+    const due = (i) => i.status === 'pending' || (i.status === 'unverified' && Date.now() - (i.checkedAt ?? 0) > 600_000)
+    for (const pending of acct.get('inbox', []).filter((i) => due(i) && tryDecode(i.packet)?.chainId === chainId)) {
+      if (pending.status === 'unverified') { // settled by someone else long ago: look for the proof again
+        const p = decodePayment(pending.packet)
+        const r = await proven(p, undefined, undefined, pending)
+        updateEntry('inbox', pending.packet, { ...r, checkedAt: Date.now() }); renderInbox()
+        continue
+      }
       const result = await settleOne(pending.packet, true, pending)
       if (result.status === 'settled' && !pending.settledAt) result.settledAt = Date.now()
       const item = updateEntry('inbox', pending.packet, result)
@@ -806,7 +839,7 @@ async function settleAll() {
       }
     }
     // Strangers' payments: forwarded through the gateway only, never with our own gas.
-    for (const r of relays.filter((x) => x.status === 'pending')) { Object.assign(r, await settleOne(r.packet, false, r)); renderInbox() }
+    for (const r of relays.filter((x) => x.status === 'pending' && tryDecode(x.packet)?.chainId === chainId)) { Object.assign(r, await settleOne(r.packet, false, r)); renderInbox() }
     await refreshSent()
     refreshBalance()
   } finally {
@@ -835,8 +868,9 @@ async function settleOne(packet, mine, item) {
   const now = Math.floor(Date.now() / 1000)
   const status = await checkPayment(p).catch(() => null)
   if (status?.settled || (p.tab && status?.paidUpTo > BigInt(item?.prev ?? 0) && !status.funded)) return proven(p, undefined, undefined, item)
-  if (p.tab && status && status.tab.epoch !== p.epoch) return { status: 'failed', note: 'ardoise fermée avant encaissement : non payé' }
-  if (p.tab && status && status.tab.expiry <= now) return { status: 'failed', note: 'ardoise expirée avant encaissement : non payé' }
+  if (!status && (p.tab || p.validBefore <= BigInt(now))) return { status: 'pending', note: 'vérification sur Arc impossible pour le moment' }
+  if (p.tab && status.tab.epoch !== p.epoch) return { status: 'failed', note: 'ardoise fermée avant encaissement : non payé' }
+  if (p.tab && status.tab.expiry <= now) return { status: 'failed', note: 'ardoise expirée avant encaissement : non payé' }
   if (!p.tab && p.validBefore <= BigInt(now)) return { status: 'failed', note: 'expiré avant d’avoir été réglé' }
   if (status && !status.funded) return { status: 'pending', note: `payeur pas assez approvisionné (${money(status.payerBalance, p.token)})` }
 
@@ -869,14 +903,16 @@ async function refreshSent() {
     const p = tryDecode(s.packet)
     if (!p) continue
     try {
-      if (!p.tab && p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) { updateEntry('sent', s.packet, { status: 'failed' }); continue }
-      const st = await checkPayment(p)
-      if (p.tab && st.tab.epoch !== p.epoch) { updateEntry('sent', s.packet, { status: 'failed' }); continue }
+      if (p.chainId !== chainId) continue
+      const st = await checkPayment(p) // a read error throws: nothing is decided without the chain
       if (st.settled) {
         const r = await proven(p, undefined, undefined, s)
         updateEntry('sent', s.packet, { status: r.status, settledAt: Date.now() })
         if (r.status === 'settled') confirmSettled({ title: 'Paiement réglé', amount: money(amountOf(s, p), p.token), sub: `à ${nameOf(p.to)} · final sur Arc`, tx: r.tx })
+        continue
       }
+      // Not settled, and the chain says so: only now can expiry or a closed tab mean "failed".
+      if (p.tab ? st.tab.epoch !== p.epoch : p.validBefore <= BigInt(Math.floor(Date.now() / 1000))) updateEntry('sent', s.packet, { status: 'failed' })
     } catch {}
   }
   renderSent()
@@ -948,7 +984,7 @@ function txCell({ icon, kind, title, sub, amount, amountClass = '', status, deta
 }
 
 function renderInbox() {
-  const inbox = [...acct.get('inbox', []), ...relays]
+  const inbox = [...acct.get('inbox', []), ...relays].filter((i) => tryDecode(i.packet)?.chainId === chainId)
   $('inbox').innerHTML = inbox.length ? inbox.slice(0, 100).map((item) => {
     const p = tryDecode(item.packet)
     if (!p) return ''
@@ -959,14 +995,14 @@ function renderInbox() {
       title: mine ? `De ${nameOf(p.from)}` : 'Relayé',
       sub: (mine ? `par ${item.via ?? '—'}` : `${nameOf(p.from)} → ${nameOf(p.to)}`)
         + (p.tab && item.guaranteed && item.status === 'pending' && (item.redeemBefore ?? 0) > Date.now() / 1000 ? ` · 🔒 garanti jusqu’au ${day(item.redeemBefore)}` : ''),
-      amount: `${mine ? '+' : ''}${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token)}`, amountClass: mine && item.status === 'settled' ? 'in' : '',
+      amount: `${mine ? '+' : ''}${money(item.received ? BigInt(item.received) : amountOf(item, p), p.token, p.chainId)}`, amountClass: mine && item.status === 'settled' ? 'in' : '',
       status: item.status, details: journey(item, p),
     })
   }).join('') : EMPTY
 }
 
 function renderSent() {
-  const sent = acct.get('sent', [])
+  const sent = acct.get('sent', []).filter((s) => tryDecode(s.packet)?.chainId === chainId)
   $('sent').innerHTML = sent.length ? sent.map((s) => {
     const p = tryDecode(s.packet)
     if (!p) return ''
@@ -974,7 +1010,7 @@ function renderSent() {
     return txCell({
       icon: ICON_OUT, kind: 'out', title: `À ${nameOf(p.to)}`,
       sub: s.label ? `${s.label} · ${when}` : when,
-      amount: `−${money(amountOf(s, p), p.token)}`,
+      amount: `−${money(amountOf(s, p), p.token, p.chainId)}`,
       status: s.status === 'pending' && s.delivered ? 'delivered' : s.status,
     })
   }).join('') : EMPTY
@@ -997,10 +1033,10 @@ $('chainSel').onchange = (e) => { chainId = Number(e.target.value); store.set('c
 $('gateway').onchange = (e) => store.set('gateway', e.target.value.trim())
 $('myName').onchange = (e) => { store.set('name', e.target.value.trim()); announce(); toast('Nom visible par les appareils proches') }
 $('exportKey').onclick = $('backupKey').onclick = async () => {
-  await copy(key)
+  if (!(await copy(key))) return toast('Copie impossible ici : réessaie, ou exporte depuis un autre navigateur')
   store.set(`${account.address}:backedUp`, true)
   $('backupNag').hidden = true
-  toast('Clé privée copiée : colle-la dans ton gestionnaire de mots de passe. Ne la partage jamais.')
+  toast('Clé privée copiée : colle-la dans ton gestionnaire de mots de passe, puis copie autre chose. Ne la partage jamais.')
 }
 $('importKey').onclick = () => {
   if (!confirm('Importer une clé remplace ce wallet sur cet appareil. As-tu exporté la clé actuelle ?')) return

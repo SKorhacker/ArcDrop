@@ -35,6 +35,10 @@ contract ArcDropTabs {
     /// copied funding signature cannot be replayed to open a tab for someone else.
     bytes32 public constant FUND_TYPEHASH = keccak256("TabFunding(address to,uint256 expiry,bytes32 salt)");
     bytes32 public immutable DOMAIN_SEPARATOR;
+    /// The only tokens tabs accept: a fake token could otherwise emit "funded" events and
+    /// fill recipients' payer lists for free.
+    address public immutable USDC;
+    address public immutable EURC;
     uint256 private constant HALF_N = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
     struct Tab {
@@ -63,8 +67,15 @@ contract ArcDropTabs {
     error NothingToPay();
     error SelfTab();
     error TransferFailed();
+    error UnknownToken();
 
-    constructor() {
+    function _known(address token) private view {
+        if (token != USDC && token != EURC) revert UnknownToken();
+    }
+
+    constructor(address usdc, address eurc) {
+        USDC = usdc;
+        EURC = eurc;
         DOMAIN_SEPARATOR = keccak256(abi.encode(
             keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
             keccak256("ArcDropTabs"), keccak256("1"), block.chainid, address(this)
@@ -78,6 +89,7 @@ contract ArcDropTabs {
         address token, address from, address to, uint256 expiry, bytes32 salt,
         uint256 value, uint256 validAfter, uint256 validBefore, uint8 v, bytes32 r, bytes32 s
     ) external {
+        _known(token);
         if (to == from || to == address(0) || to == address(this)) revert SelfTab();
         if (value < MIN_LOCK || value > type(uint128).max) revert TooSmall();
         if (expiry < block.timestamp + MIN_DURATION || expiry > block.timestamp + MAX_DURATION) revert BadDuration();
@@ -99,6 +111,7 @@ contract ArcDropTabs {
     /// Pays `to` up to the cumulative amount signed by `from`. Anyone may submit;
     /// the money can only go to `to`.
     function redeem(address token, address from, address to, uint256 cumulative, uint8 v, bytes32 r, bytes32 s) external {
+        _known(token);
         Tab storage t = tabs[token][from][to];
         if (block.timestamp >= t.expiry) revert Expired();
         if (uint256(s) > HALF_N) revert BadSignature();
@@ -128,6 +141,13 @@ contract ArcDropTabs {
 
     /// After expiry, the payer takes back what was not paid out.
     function close(address token, address to) external {
+        closeTo(token, to, msg.sender);
+    }
+
+    /// Same, refunded to another address of the payer's choosing (e.g. if the payer's own
+    /// address can no longer receive the token).
+    function closeTo(address token, address to, address refundTo) public {
+        _known(token);
         Tab storage t = tabs[token][msg.sender][to];
         if (t.expiry == 0 || block.timestamp < t.expiry) revert NotExpired();
         uint256 refund = t.locked - t.paid;
@@ -135,7 +155,7 @@ contract ArcDropTabs {
         t.paid = 0;
         t.expiry = 0;
         t.epoch += 1;
-        if (refund > 0 && !IFiatToken(token).transfer(msg.sender, refund)) revert TransferFailed();
+        if (refund > 0 && !IFiatToken(token).transfer(refundTo, refund)) revert TransferFailed();
         emit TabClosed(token, msg.sender, to, refund);
     }
 }

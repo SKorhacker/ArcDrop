@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { createWalletClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { CHAINS, publicClient } from '../core/arcdrop.js'
+import { CHAINS, publicClient, tokenAddress } from '../core/arcdrop.js'
 
 const chainId = process.argv[2] === 'mainnet' ? 5042 : 5042002
 const NAME = process.argv[3] ?? 'ArcDropVault'
@@ -11,7 +11,9 @@ const FILE = { ArcDropVault: 'core/vault.json', ArcDropTabs: 'core/tabs.json' }[
 const { abi, bytecode } = JSON.parse(readFileSync(`contracts/${NAME}.json`, 'utf8'))
 const account = privateKeyToAccount(process.env.RELAYER_PRIVATE_KEY)
 const wallet = createWalletClient({ account, chain: CHAINS[chainId], transport: http() })
-const hash = await wallet.deployContract({ abi, bytecode })
+// Tabs only accept the chain's real USDC and EURC.
+const args = NAME === 'ArcDropTabs' ? [tokenAddress(chainId, 0), tokenAddress(chainId, 1)] : []
+const hash = await wallet.deployContract({ abi, bytecode, args })
 const receipt = await publicClient(chainId).waitForTransactionReceipt({ hash })
 const vaults = existsSync(FILE) ? JSON.parse(readFileSync(FILE, 'utf8')) : {}
 vaults[chainId] = receipt.contractAddress

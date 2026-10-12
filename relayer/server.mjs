@@ -64,9 +64,12 @@ function ipLimited(ip) {
   return ipWindows.allowed(`m:${k}`, 30, 60_000) && ipWindows.allowed(`h:${k}`, 300, 3_600_000) ? null : 'too many requests from this address'
 }
 // Gas-spending gate, once we know who the request really is for.
-function rateLimited({ ip, payer }) {
+function rateLimited({ ip, payer, recipient }) {
   if (ip && ipLimited(ip)) return 'too many requests from this address'
-  if (payer && (!walletWindows.allowed(`m:${payer}`, 3, 60_000) || !walletWindows.allowed(`h:${payer}`, 20, 3_600_000))) return 'too many payments from this wallet, retry later'
+  if (payer && (!walletWindows.allowed(`m:${payer}`, 3, 60_000) || !walletWindows.allowed(`h:${payer}`, 20, 3_600_000)
+    || !walletWindows.allowed(`d:${payer}`, 60, 86_400_000))) return 'too many payments from this wallet, retry later'
+  // One recipient can't soak up the shared budget either (a merchant gets 60 sponsored payments an hour).
+  if (recipient && !walletWindows.allowed(`r:${recipient}`, 60, 3_600_000)) return 'too many payments to this wallet, retry later'
   const now = Date.now()
   globalHits = globalHits.filter((t) => now - t < 3_600_000)
   if (globalHits.length >= 300) return 'gateway busy, retry later'
@@ -138,7 +141,7 @@ export async function relay(text, { ip } = {}) {
   if (!inflight.has(key)) {
     // Tab vouchers are throttled per recipient: a payer must not be able to block their own
     // recipient's redemptions by exhausting a quota tied to the payer's address.
-    const limited = rateLimited({ ip, payer: p.tab ? `to:${p.to}` : p.from })
+    const limited = rateLimited({ ip, payer: p.tab ? `to:${p.to}` : p.from, recipient: p.tab ? undefined : p.to })
     if (limited) return fail(429, limited)
     const started = Date.now()
     const job = serial(async () => {

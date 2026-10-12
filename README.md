@@ -75,10 +75,17 @@ The recipient's app learns, while online, which tabs exist for it (on-chain inde
 
 ## Security review
 
-The project was attacked by three independent AI reviewers (contract, gateway/core, app/iOS/Bluetooth). Every confirmed finding is fixed and has a regression test:
+The project went through two rounds of three independent AI reviewers (contract, gateway/core/web app, iOS + Android + Bluetooth). The second round, after the Android app, found no theft or over-redeem in the contract; it led to:
+
+- **Bluetooth payments are stored and forwarded only after their signature is checked** (the app vouches for each one), so a nearby device can't push junk "from" someone else to crowd out their payments; only payments this device sent itself are protected from eviction; half-sent multi-frame messages expire instead of blocking a link; the Android mesh restarts when Bluetooth is toggled and caps its connections.
+- **Wallet safety:** the key is re-injected after every save (a reload can't create a second wallet), a native key-store failure never deletes the web copy, and the backup reminder only goes away once the key was really copied.
+- **Honest status:** lists show the current network only (test money never looks real), "failed" requires the chain to say so (an expired payment that was settled meanwhile shows as paid), proofs of old settlements are found through the explorer, a replayed, already-settled payment is not counted as new income, and malformed signatures are refused instead of crashing.
+- **Abuse limits:** far-future expiries refused, at most 30 pending payments from strangers, per-recipient and daily per-payer gateway caps, tab reads throttled, and the tabs contract only accepts the chain's real USDC and EURC (`closeTo` lets a payer refund to another address).
+
+Every confirmed finding is fixed and has a regression test:
 
 - `npm test`: offline + live checks, including `test/attacks.test.mjs` (alternate encodings, malleable signatures, postdated payments, overflow, receipt forgery, hostile requests) and `test/gateway.test.mjs` (self-payment gas drain, dust, malformed input, rate limits, CORS, path traversal, oversized bodies).
-- `mesh/check`: Bluetooth framing plus hostile-device tests (20 000-fragment flood, cross-device frame injection, junk payments).
+- `mesh/check` (`node scripts/mesh-check.mjs`): Bluetooth framing plus hostile-device tests (20 000-fragment flood, cross-device frame injection, junk payments, a link recovering from half-sent messages).
 - `scripts/attack-e2e.mjs`: live burnt-nonce attack on testnet; ArcDrop reports the payment as NOT paid, because "settled" requires an on-chain transfer of exactly that amount to exactly that recipient.
 - `scripts/tabs-e2e.mjs`: live tab attacks (redirected funding, self-redeem, early close, replay, forged amount, wrong epoch, overspend).
 
@@ -89,6 +96,7 @@ Two rounds of review (seven AI reviewers in total). Round two also produced: one
 - **Outside a tab, an offline payment is a promise.** The app says "NOT PAID YET" until Arc confirms it.
 - **Tabs must be cashed in before they expire.** The receiver trusts a tab only if it has at least 24 h left and shows the deadline; the app redeems as soon as it is online.
 - **Bluetooth is an open radio.** Nearby, your wallet address and display name are visible to anyone in range while the Pay screen is open (presence is off otherwise). Payments carried for others reveal payer, recipient and amount to the phones that carry them. A hostile device in range can crowd out *other people's* payments a phone is carrying; your own payments are never evicted.
+- **Receipts carried for others are only checked structurally** (only the payer can verify a receipt), within their own quota.
 - **The gateway's limits are per instance.** A production deployment should keep counters and the gas budget in shared storage (e.g. Redis).
 - **The wallet key** lives in the iOS Keychain or the Android Keystore (this device only: export it to move phones; an Android uninstall erases it) or in browser storage on the web demo.
 
