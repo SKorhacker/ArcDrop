@@ -6,12 +6,12 @@
 Sign in airplane mode, hand the payment over by Bluetooth, QR or a shared link,
 and it settles on [Arc](https://arc.io) the moment any phone nearby gets a signal.
 
-[**▶ Watch the 40 s demo (with sound)**](docs/media/arcdrop-demo.mp4) ·
+[**▶ Watch the 40 s demo on YouTube**](https://youtu.be/JI5XYOO8iiQ) ·
 [Web app](https://arcdrop-pink.vercel.app) ·
 [Android APK](https://github.com/SKorhacker/ArcDrop/releases/latest) ·
 [Mainnet transaction](https://explorer.arc.io/tx/0x87be8dade5ca7214b86798291c07664fd4ddb420618b24d09223d3dab35af832)
 
-<a href="docs/media/arcdrop-demo.mp4"><img src="docs/media/arcdrop-demo.gif" width="760" alt="An iPhone in airplane mode pays a Mac over Bluetooth; the Mac settles it on Arc mainnet in 1.01 s"></a>
+<a href="https://youtu.be/JI5XYOO8iiQ"><img src="docs/media/arcdrop-demo.gif" width="760" alt="An iPhone in airplane mode pays a Mac over Bluetooth; the Mac settles it on Arc mainnet in 1.01 s"></a>
 
 <sub>Real devices, Arc mainnet: the iPhone stays in airplane mode while the Mac, reached over ArcDrop's Bluetooth mesh, settles the payment in 1.01 s.</sub>
 
