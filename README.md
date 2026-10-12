@@ -1,6 +1,6 @@
 # ArcDrop
 
-**Pay in USDC with no internet. Carry the payment by QR code, AirDrop or Bluetooth mesh. It settles on Arc the moment any device gets a signal.**
+**Pay in USDC with no internet. Carry the payment by QR code, a shared link or ArcDrop's own Bluetooth mesh (iPhone ↔ Android). It settles on Arc the moment any device gets a signal.**
 
 Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend: show a QR, AirDrop it, or drop it in [bitchat](https://github.com/permissionlesstech/bitchat), where it hops from phone to phone over Bluetooth. The first device in the chain that finds internet settles it on Arc, final in about a second.
 
@@ -25,9 +25,16 @@ Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend:
 |---|---|---|
 | **QR code** | Payer shows a QR, receiver scans it in the app (camera, offline) | Working in the web app |
 | **AirDrop** | "AirDrop" opens the iOS share sheet with a link `…/#p=arcdrop:1:…`; the receiver's offline-cached app imports it | Working in the web app (iOS ↔ iOS) |
-| **Bluetooth mesh** | Payment pasted as a bitchat message rides the BLE mesh. With the [bitchat patch](ios/), every bitchat node that has internet forwards the packet to the gateway automatically, and `/pay arcdrop:1:…` floods it across the mesh | Stock bitchat: works today (copy/paste). Relay (`ArcDropRelay.swift`): compiled and tested against the gateway. Hooks + `/pay`: written, need an Xcode build |
+| **ArcDrop Bluetooth mesh** | The iOS and Android apps run the same BLE mesh (`mesh/ArcMesh.swift`, `android-app/…/ArcMesh.kt`): nearby phones exchange payments directly, store-and-forward up to 7 hops | Working on real devices (iPhone ↔ Mac, airplane mode). Android ↔ iPhone: same wire format, not yet tested side by side |
+| **Shared link** | Android "Partager" / any messenger: `https://arcdrop-pink.vercel.app/#p=…` opens the Android app directly (verified App Link) | Working (Android, tested over Discord) |
+| **bitchat** | Payment pasted as a bitchat message rides the BLE mesh. With the [bitchat patch](ios/), every bitchat node that has internet forwards the packet to the gateway automatically, and `/pay arcdrop:1:…` floods it across the mesh | Stock bitchat: works today (copy/paste). Relay (`ArcDropRelay.swift`): compiled and tested against the gateway. Hooks + `/pay`: written, need an Xcode build |
 
 ## What's verified
+
+On real devices (Arc testnet):
+
+- iPhone in airplane mode → Bluetooth → Mac → Arc: settled in 0.93 s; Mac → iPhone over Bluetooth with delivery receipt: 0.80 s.
+- Android (Samsung, Android 15): payment received from a shared link and settled on Arc in 0.82 s; payment signed on Android, delivered to an iPhone by link.
 
 `npm test` runs offline tests plus read-only checks against **Arc mainnet** (no funds, no gas):
 
@@ -41,6 +48,7 @@ Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend:
 `mesh/ArcMesh.swift` is a CoreBluetooth mesh: every device is both peripheral and central, so phones talk directly. Payments are **store-and-forward**: each node keeps the payments it has seen, hands them to every new device it meets, and floods new ones (7-hop limit, deduplicated by hash). A payment can cross a crowd in pockets until any node with internet settles it. Packets are self-authenticating, so nodes need no trust.
 
 - `ios-app/`: iOS app (XcodeGen project). It hosts the web app and adds the mesh, the native share sheet (AirDrop) and background settlement. Bridge: `webkit.messageHandlers.arcmesh` (JS → native), `arcdropReceive` / `arcdropMeshPeers` (native → JS).
+- `android-app/`: Android app (Kotlin, Gradle). Same idea as the iOS app: it serves the bundled web app from `https://appassets.androidplatform.net` (offline), runs `ArcMesh.kt` (byte-compatible with the Swift mesh: same service/characteristic UUIDs, frames and envelopes), keeps the key in the Android Keystore (EncryptedSharedPreferences) and opens `https://arcdrop-pink.vercel.app/#p=…` links through a verified App Link. Bridge: `ArcMeshAndroid.postMessage(json)` (a `WebMessageListener` restricted to the app's own origin).
 - `mesh/node/`: the same mesh as a macOS relay node (`arcmesh-node`), so a Mac can carry and settle payments too.
 - `mesh/check/`: framing tests (BLE MTUs from 20 to 512 bytes, interleaving, garbage).
 
@@ -49,7 +57,11 @@ Airplane mode on. You type `5 USDC`, tap sign, and hand the payment to a friend:
 mesh/build/arcmesh-node https://arcdrop-pink.vercel.app
 # iOS app
 cd ios-app && xcodegen generate && open ArcDrop.xcodeproj   # set your team, run on device
+# Android app (JDK 17 + Android SDK 35)
+npm run build && cd android-app && ./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
 ```
+
+**Try it on Android:** download `ArcDrop.apk` from the [Releases](https://github.com/SKorhacker/ArcDrop/releases) page and install it (allow "unknown apps"). Updating keeps your wallet; **uninstalling erases it**, so export your key first (the app reminds you once the wallet holds funds).
 
 ## Tabs: guaranteed offline payments
 
@@ -78,7 +90,7 @@ Two rounds of review (seven AI reviewers in total). Round two also produced: one
 - **Tabs must be cashed in before they expire.** The receiver trusts a tab only if it has at least 24 h left and shows the deadline; the app redeems as soon as it is online.
 - **Bluetooth is an open radio.** Nearby, your wallet address and display name are visible to anyone in range while the Pay screen is open (presence is off otherwise). Payments carried for others reveal payer, recipient and amount to the phones that carry them. A hostile device in range can crowd out *other people's* payments a phone is carrying; your own payments are never evicted.
 - **The gateway's limits are per instance.** A production deployment should keep counters and the gas budget in shared storage (e.g. Redis).
-- **The wallet key** lives in the iOS Keychain (this device only: export it to move phones) or in browser storage on the web demo.
+- **The wallet key** lives in the iOS Keychain or the Android Keystore (this device only: export it to move phones; an Android uninstall erases it) or in browser storage on the web demo.
 
 ## Run it
 
@@ -116,7 +128,11 @@ The patch adds `Services/ArcDropRelay.swift` (packet decoder + relay queue), thr
 
 ```
 core/arcdrop.js        packet format, offline sign/verify, status, settle (viem)
-web/                   offline-first PWA: pay, receive, QR, AirDrop, bitchat copy
+web/                   offline-first PWA: pay, receive, QR, AirDrop/share, tabs, requests
+contracts/             ArcDropTabs.sol: guaranteed offline payments (one-way channels)
+mesh/                  ArcDrop Bluetooth mesh (Swift) + macOS relay node + framing tests
+ios-app/               iOS app (WKWebView host + mesh + Keychain)
+android-app/           Android app (WebView host + Kotlin mesh + Keystore + App Links)
 relayer/server.mjs     gateway: serves the app, POST /api/relay settles on Arc
 relayer/cli.mjs        settle from the terminal
 api/relay.mjs          same gateway as a Vercel function
@@ -128,7 +144,7 @@ test/                  tests, incl. Arc mainnet simulation
 
 - **Offline, a payment is a promise.** The receiver can verify the signature offline, but cannot know whether the payer still has the funds until a node reaches Arc. The app shows "pending" until it is final, and the payer's app refuses to sign more than the last balance it saw on Arc minus payments still pending.
 - The demo wallet key lives in the browser's storage: keep small amounts on it.
-- AirDrop only works between Apple devices; QR and bitchat cover the rest.
+- AirDrop only works between Apple devices; on Android the same button opens the system share sheet, and QR and Bluetooth work everywhere.
 
 ## Roadmap
 
