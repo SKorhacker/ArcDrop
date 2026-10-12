@@ -65,7 +65,7 @@ npm run build && cd android-app && ./gradlew assembleRelease   # app/build/outpu
 
 ## Tabs: guaranteed offline payments
 
-A plain offline payment is a promise: the payer's balance can only be checked online. A **tab** (`contracts/ArcDropTabs.sol`, Arc testnet, address in `core/tabs.json`) turns it into a guarantee for one recipient:
+A plain offline payment is a promise: the payer's balance can only be checked online. A **tab** (`contracts/ArcDropTabs.sol`, on Arc mainnet `0xe95d1e061f3529029d5cb5269dbffbef10311c6a` and testnet, addresses in `core/tabs.json`) turns it into a guarantee for one recipient:
 
 - online, once, the payer locks funds **for one address** until an expiry (EIP-3009 `receiveWithAuthorization`; its nonce commits to the recipient and expiry, so the signature cannot be redirected);
 - offline, each payment is an EIP-712 voucher with the **running total** owed (`arcdrop:4:…`); the recipient redeems the latest one, the contract pays the difference;
